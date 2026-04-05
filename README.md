@@ -15,14 +15,17 @@ brew install netj/tap/wtcode
 ### PyPI (via [uv](https://docs.astral.sh/uv/))
 
 ```sh
+uv tool install wtcode
+```
+
+Or try it without installing:
+
+```sh
 uvx wtcode
 ```
 
-Or install globally:
-
-```sh
-uv tool install wtcode
-```
+> **Note:** `uv tool install` is recommended over `uvx` for regular use.
+> `uvx` keeps a parent `uv tool run` process alive, which can interfere with tools like tmux that detect the working directory from the process tree.
 
 ### From source
 
