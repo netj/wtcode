@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wtcode"
+version = "0.1.0"
+description = "Launch your favorite code tool in a git worktree"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name = "Jaeho Shin", email = "netj@sparcs.org"}]
+keywords = ["git", "worktree", "cli", "claude", "developer-tools"]
+classifiers = [
+    "Environment :: Console",
+    "Topic :: Software Development",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/netj/wtcode"
+Repository = "https://github.com/netj/wtcode"
+Issues = "https://github.com/netj/wtcode/issues"
+
+[project.scripts]
+wtcode = "wtcode.__main__:main"
+
+[tool.setuptools.package-data]
+wtcode = ["wtcode.sh"]
