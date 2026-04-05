@@ -9,7 +9,7 @@ ${WTCODE_DEBUG:+set -x}
 
 --msg() { echo "wtcode: $*" >&2; }
 
-WTCODE_VERSION=0.1.0
+WTCODE_VERSION=0.1.1
 --version() { echo "wtcode $WTCODE_VERSION"; }
 --help() {
   cat <<USAGE
@@ -108,7 +108,10 @@ WTCODE_CMDS_TO_TRY=(
     branch_name=${1:?Need a worktree/branch name as first argument}; shift
   fi
 
-  : ${branch_name:?non-empty worktree/branch name required}
+  if [[ -z ${branch_name-} ]]; then
+    --msg "no branch selected"
+    exit 1
+  fi
 
   # check if branch name starts with ':' to force new branch creation
   # supports multiple colons (e.g., :::my-branch) to avoid fzf matching
