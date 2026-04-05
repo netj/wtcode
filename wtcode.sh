@@ -9,13 +9,14 @@ ${WTCODE_DEBUG:+set -x}
 
 --msg() { echo "wtcode: $*" >&2; }
 
-WTCODE_VERSION=0.1.1
+WTCODE_VERSION=0.1.2
 --version() { echo "wtcode $WTCODE_VERSION"; }
 --help() {
   cat <<USAGE
 wtcode $WTCODE_VERSION -- launch a code tool in a git worktree
 
 Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
+       wtcode --exec CMD [CMD-ARGS...]
 
   BRANCH     Git branch or worktree name to switch to.
              If omitted and fzf is available, interactively select one.
@@ -24,6 +25,8 @@ Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
 
   CMD        Command to launch in the worktree (default: \$WTCODE_CMD,
              or first available of: ${WTCODE_CMDS_TO_TRY[*]}, \$SHELL).
+
+  --exec     Skip branch argument; select interactively, then launch CMD.
 
 Environment variables:
   WTCODE_CMD             Default tool to launch (e.g., claude, lazygit, vim)
@@ -34,6 +37,7 @@ Examples:
   wtcode feature-x                  # select/create worktree, launch default tool
   wtcode feature-x lazygit          # launch lazygit in the worktree
   wtcode feature-x claude --resume  # launch claude with --resume
+  wtcode --exec claude --resume     # select interactively, launch claude --resume
   wtcode :new-feature               # create new branch and worktree
   WTCODE_CMD=cursor wtcode feature  # use cursor as the default tool
 USAGE
@@ -48,9 +52,12 @@ WTCODE_CMDS_TO_TRY=(
 )
 
 ###############################################################################
-## --select-git-branch -- determine which branch/worktree to use
+## --enter-git-worktree -- select branch and create/switch worktree
 ###############################################################################
---select-git-branch() {
+--enter-git-worktree() {
+  local branch_name=
+
+  # 1. determine which branch/worktree to use
   if [[ $# -gt 0 ]]; then
     branch_name=$1; shift
   elif type fzf &>/dev/null; then
@@ -115,7 +122,7 @@ WTCODE_CMDS_TO_TRY=(
 
   # check if branch name starts with ':' to force new branch creation
   # supports multiple colons (e.g., :::my-branch) to avoid fzf matching
-  force_new_branch=false
+  local force_new_branch=false
   if [[ $branch_name == :* ]]; then
     force_new_branch=true
     branch_name=${branch_name##+(:)}
@@ -131,7 +138,7 @@ WTCODE_CMDS_TO_TRY=(
   fi
 
   # check if branch_name refers to a remote branch (e.g., origin/feature-x)
-  remote_branch=
+  local remote_branch=
   if ! $force_new_branch; then
     for remote in $(git remote); do
       if [[ $branch_name == "$remote/"* ]]; then
@@ -142,15 +149,8 @@ WTCODE_CMDS_TO_TRY=(
     done
   fi
 
-  # remaining args are the command to launch
-  wtcode_cmd=("$@")
-}
 
-###############################################################################
-## --prepare-git-worktree -- create or switch to the worktree for $branch_name
-###############################################################################
---prepare-git-worktree() {
-  # determine root of the worktree dirs
+  # 2. create or switch to the worktree
   cd "$(git rev-parse --show-toplevel)"
   : ${GIT_WORKTREE_ROOT:=$(
     git_common_dir=$(git rev-parse --git-common-dir)
@@ -160,8 +160,7 @@ WTCODE_CMDS_TO_TRY=(
     echo "$PWD"/../"$repo_name".worktrees
   )}
 
-  # ensure worktree based on given branch name
-  worktree_path="$GIT_WORKTREE_ROOT"/"$branch_name"
+  local worktree_path="$GIT_WORKTREE_ROOT"/"$branch_name"
   if [[ -e "$worktree_path"/.git ]]; then
     --msg "using existing worktree: $worktree_path"
   elif [[ -n ${remote_branch-} ]] && ! git rev-parse --verify "refs/heads/$branch_name" &>/dev/null; then
@@ -189,17 +188,21 @@ WTCODE_CMDS_TO_TRY=(
 ## --launch-code-tool -- resolve and exec the tool in the worktree
 ###############################################################################
 --launch-code-tool() {
-  # resolve the command to launch if not specified by user
-  if [[ ${#wtcode_cmd[@]} -eq 0 ]]; then
+  # resolve the command to launch if not specified
+  if [[ $# -eq 0 ]]; then
     for _cmd in "${WTCODE_CMDS_TO_TRY[@]}"; do
-      [[ -n "$_cmd" ]] && type "$_cmd" &>/dev/null && wtcode_cmd=("$_cmd") && break
+      [[ -n "$_cmd" ]] && type "$_cmd" &>/dev/null && set -- "$_cmd" && break
     done
     # fall back to an interactive shell
-    wtcode_cmd=("${wtcode_cmd[@]:-${SHELL:-bash}}")
+    [[ $# -gt 0 ]] || set -- "${SHELL:-bash}"
   fi
 
-  --msg "launching: ${wtcode_cmd[*]}"
-  "${wtcode_cmd[@]}"
+  --msg "launching: $*"
+  if [[ $(type -t "$1") == function ]]; then
+    "$@"
+  else
+    exec "$@"
+  fi
 }
 
 ###############################################################################
@@ -231,10 +234,18 @@ claude() {
 
 -h() { --help "$@"; }
 
+--exec() {
+  --enter-git-worktree
+  --launch-code-tool "$@"
+}
+
 --() {
-  --select-git-branch "$@"
-  --prepare-git-worktree
-  --launch-code-tool
+  if [[ $# -gt 0 ]]; then
+    --enter-git-worktree "$1"; shift
+  else
+    --enter-git-worktree
+  fi
+  --launch-code-tool "$@"
 }
 
 # dispatch $1 as a function when it starts with -
