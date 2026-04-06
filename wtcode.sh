@@ -134,7 +134,11 @@ WTCODE_CMDS_TO_TRY=(
     force_new_branch=true
     branch_name=${branch_name##+(:)}
     : ${branch_name:?non-empty branch name required after ':'}
-    # sanitize free-form text into a valid git branch name
+  fi
+
+  # sanitize free-form text into a valid git branch name
+  # (skip if it already matches an existing branch/ref to preserve case)
+  if $force_new_branch || ! git rev-parse --verify "$branch_name" &>/dev/null; then
     branch_name=$(--sanitize-branch-name "$branch_name")
     : ${branch_name:?branch name is empty after sanitization}
   fi
@@ -176,9 +180,6 @@ WTCODE_CMDS_TO_TRY=(
     git worktree add -B "$branch_name" "$worktree_path" "$(git rev-parse "$branch_name")"
   else
     # fork the current HEAD and create the new worktree
-    branch_name=$(--sanitize-branch-name "$branch_name")
-    : ${branch_name:?branch name is empty after sanitization}
-    worktree_path="$GIT_WORKTREE_ROOT"/"$branch_name"
     --msg "creating worktree with new branch: $branch_name"
     git worktree add -b "$branch_name" "$worktree_path" "$(git rev-parse HEAD)"
   fi
