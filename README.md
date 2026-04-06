@@ -1,6 +1,6 @@
 # wtcode
 
-**Launch your favorite code tool in a git worktree.**
+**Effortlessly launch your favorite code tool in a git worktree.**
 
 *worktree code* / *what-the-code* -- streamlines git worktree selection, creation, and launching tools like [Claude Code](https://claude.ai/code), [lazygit](https://github.com/jesseduffield/lazygit), your editor, or any command.
 
