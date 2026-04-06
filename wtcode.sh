@@ -8,6 +8,13 @@ shopt -s extglob
 ${WTCODE_DEBUG:+set -x}
 
 --msg() { echo "wtcode: $*" >&2; }
+--sanitize-branch-name() {
+  printf '%s' "$1" |
+    tr '[:upper:]' '[:lower:]' |   # lowercase
+    sed 's/[^a-z0-9/_-]/-/g' |     # replace non-alnum to hyphens
+    sed 's/--*/-/g' |              # collapse consecutive hyphens
+    sed 's/^-//; s/-$//'           # trim leading/trailing hyphens
+}
 
 WTCODE_VERSION=0.1.2
 --version() { echo "wtcode $WTCODE_VERSION"; }
@@ -128,12 +135,7 @@ WTCODE_CMDS_TO_TRY=(
     branch_name=${branch_name##+(:)}
     : ${branch_name:?non-empty branch name required after ':'}
     # sanitize free-form text into a valid git branch name
-    branch_name=$(printf '%s' "$branch_name" |
-      tr '[:upper:]' '[:lower:]' |   # lowercase
-      sed 's/[^a-z0-9/_-]/-/g' |     # replace non-alnum to hyphens
-      sed 's/--*/-/g' |              # collapse consecutive hyphens
-      sed 's/^-//; s/-$//'           # trim leading/trailing hyphens
-    )
+    branch_name=$(--sanitize-branch-name "$branch_name")
     : ${branch_name:?branch name is empty after sanitization}
   fi
 
@@ -174,6 +176,9 @@ WTCODE_CMDS_TO_TRY=(
     git worktree add -B "$branch_name" "$worktree_path" "$(git rev-parse "$branch_name")"
   else
     # fork the current HEAD and create the new worktree
+    branch_name=$(--sanitize-branch-name "$branch_name")
+    : ${branch_name:?branch name is empty after sanitization}
+    worktree_path="$GIT_WORKTREE_ROOT"/"$branch_name"
     --msg "creating worktree with new branch: $branch_name"
     git worktree add -b "$branch_name" "$worktree_path" "$(git rev-parse HEAD)"
   fi
