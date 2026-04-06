@@ -38,10 +38,13 @@ ln -s "$PWD/wtcode/wtcode.sh" /usr/local/bin/wtcode
 
 ```
 wtcode [BRANCH] [CMD [CMD-ARGS...]]
+wtcode --exec CMD [CMD-ARGS...]
 ```
 
 - **`BRANCH`** -- Git branch or worktree name. If omitted and [fzf](https://github.com/junegunn/fzf) is available, interactively select one. Prefix with `:` to create a new branch (use `:::name` to avoid fzf matching the colons).
 - **`CMD`** -- Command to launch in the worktree. Defaults to `$WTCODE_CMD`, or the first available of: `claude`, `aider`, `codex`, `$SHELL`.
+- **`--exec`** -- Skip the branch argument; select interactively via fzf, then launch `CMD`.
+- **`--help`** / **`--version`** -- Show help or version info.
 
 ### Examples
 
@@ -49,6 +52,7 @@ wtcode [BRANCH] [CMD [CMD-ARGS...]]
 wtcode feature-x                  # launch default tool in feature-x worktree
 wtcode feature-x lazygit          # launch lazygit
 wtcode feature-x claude --resume  # launch claude with flags
+wtcode --exec claude --resume     # select interactively, launch claude --resume
 wtcode :new-feature               # create new branch and worktree
 wtcode                            # interactive branch selection via fzf
 WTCODE_CMD=cursor wtcode feature  # use cursor as default tool
