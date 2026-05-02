@@ -41,7 +41,7 @@ wtcode [BRANCH] [CMD [CMD-ARGS...]]
 wtcode --exec CMD [CMD-ARGS...]
 ```
 
-- **`BRANCH`** -- Git branch or worktree name. If omitted and [fzf](https://github.com/junegunn/fzf) is available, interactively select one. Prefix with `:` to create a new branch (use `:::name` to avoid fzf matching the colons).
+- **`BRANCH`** -- Git branch or worktree name. If omitted and [fzf](https://github.com/junegunn/fzf) is available, interactively select one. Surround with `:` to create a new branch (use `:::name` or `name:::` to avoid fzf matching the colons).
 - **`CMD`** -- Command to launch in the worktree. Defaults to `$WTCODE_CMD`, or the first available of: `claude`, `aider`, `codex`, `$SHELL`.
 - **`--exec`** -- Skip the branch argument; select interactively via fzf, then launch `CMD`.
 - **`--help`** / **`--version`** -- Show help or version info.

@@ -27,8 +27,9 @@ Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
 
   BRANCH     Git branch or worktree name to switch to.
              If omitted and fzf is available, interactively select one.
-             Prefix with ':' to force creating a new branch
-             (use multiple colons to avoid fzf matching, e.g., :::my-branch).
+             Surround with ':' to force creating a new branch
+             (use multiple colons to avoid fzf matching, e.g., :::my-branch
+             or my-branch:::).
 
   CMD        Command to launch in the worktree (default: \$WTCODE_CMD,
              or first available of: ${WTCODE_CMDS_TO_TRY[*]}, \$SHELL).
@@ -127,13 +128,14 @@ WTCODE_CMDS_TO_TRY=(
     exit 1
   fi
 
-  # check if branch name starts with ':' to force new branch creation
-  # supports multiple colons (e.g., :::my-branch) to avoid fzf matching
+  # leading or trailing ':' forces new branch creation
+  # multiple colons (e.g., :::my-branch or my-branch:::) help avoid fzf matching
   local force_new_branch=false
-  if [[ $branch_name == :* ]]; then
+  if [[ $branch_name == :* || $branch_name == *: ]]; then
     force_new_branch=true
     branch_name=${branch_name##+(:)}
-    : ${branch_name:?non-empty branch name required after ':'}
+    branch_name=${branch_name%%+(:)}
+    : ${branch_name:?non-empty branch name required around ':'}
   fi
 
   # sanitize free-form text into a valid git branch name
