@@ -155,6 +155,19 @@ WTCODE_CMDS_TO_TRY=(
     done
   fi
 
+  # if the branch is already checked out on a worktree, use that worktree
+  # regardless of its directory name — avoids "already checked out" failures
+  # when branches and worktree directories have drifted apart (e.g., after
+  # something like claude ran `git checkout` inside a worktree)
+  if ! $force_new_branch && [[ -z ${remote_branch-} ]]; then
+    local existing_worktree
+    existing_worktree=$(git for-each-ref --format='%(worktreepath)' "refs/heads/$branch_name" 2>/dev/null)
+    if [[ -n $existing_worktree ]]; then
+      --msg "branch '$branch_name' is checked out at: $existing_worktree"
+      cd "$existing_worktree"
+      return 0
+    fi
+  fi
 
   # 2. create or switch to the worktree
   cd "$(git rev-parse --show-toplevel)"
