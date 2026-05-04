@@ -19,6 +19,16 @@ Version is defined in three places — keep them in sync:
 
 ## Testing
 
+Automated tests cover branch→worktree resolution and the colon-prefix/suffix
+parsing. Each test spins up a throwaway repo under `mktemp -d`.
+
+```sh
+./tests/test.sh                         # run all
+./tests/test.sh test_chaotic_case_branch_wins_over_dir   # run one
+```
+
+Manual smoke tests:
+
 ```sh
 ./wtcode.sh --help
 ./wtcode.sh --version
