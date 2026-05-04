@@ -182,6 +182,24 @@ WTCODE_CMDS_TO_TRY=(
   )}
 
   local worktree_path="$GIT_WORKTREE_ROOT"/"$branch_name"
+
+  # if the default worktree directory exists but holds a different branch
+  # (e.g., something like claude swapped branches with `git checkout`), pick
+  # a fresh numbered suffix instead of stealing it. branch-is-checked-out
+  # case is already handled above, so we only need to check the default path.
+  if [[ -e "$worktree_path"/.git ]]; then
+    local existing_branch
+    existing_branch=$(git -C "$worktree_path" branch --show-current 2>/dev/null)
+    if [[ -n $existing_branch && $existing_branch != "$branch_name" ]]; then
+      --msg "$worktree_path holds branch '$existing_branch'; picking a new path for '$branch_name'"
+      local n=2
+      while [[ -e "$GIT_WORKTREE_ROOT/$branch_name-$n" ]]; do
+        n=$((n+1))
+      done
+      worktree_path="$GIT_WORKTREE_ROOT/$branch_name-$n"
+    fi
+  fi
+
   if [[ -e "$worktree_path"/.git ]]; then
     --msg "using existing worktree: $worktree_path"
   elif [[ -n ${remote_branch-} ]] && ! git rev-parse --verify "refs/heads/$branch_name" &>/dev/null; then
