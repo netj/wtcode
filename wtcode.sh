@@ -27,8 +27,9 @@ Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
 
   BRANCH     Git branch or worktree name to switch to.
              If omitted and fzf is available, interactively select one.
-             Prefix with ':' to force creating a new branch
-             (use multiple colons to avoid fzf matching, e.g., :::my-branch).
+             Surround with ':' to force creating a new branch
+             (use multiple colons to avoid fzf matching, e.g., :::my-branch
+             or my-branch:::).
 
   CMD        Command to launch in the worktree (default: \$WTCODE_CMD,
              or first available of: ${WTCODE_CMDS_TO_TRY[*]}, \$SHELL).
@@ -127,13 +128,14 @@ WTCODE_CMDS_TO_TRY=(
     exit 1
   fi
 
-  # check if branch name starts with ':' to force new branch creation
-  # supports multiple colons (e.g., :::my-branch) to avoid fzf matching
+  # leading or trailing ':' forces new branch creation
+  # multiple colons (e.g., :::my-branch or my-branch:::) help avoid fzf matching
   local force_new_branch=false
-  if [[ $branch_name == :* ]]; then
+  if [[ $branch_name == :* || $branch_name == *: ]]; then
     force_new_branch=true
     branch_name=${branch_name##+(:)}
-    : ${branch_name:?non-empty branch name required after ':'}
+    branch_name=${branch_name%%+(:)}
+    : ${branch_name:?non-empty branch name required around ':'}
   fi
 
   # sanitize free-form text into a valid git branch name
@@ -155,6 +157,19 @@ WTCODE_CMDS_TO_TRY=(
     done
   fi
 
+  # if the branch is already checked out on a worktree, use that worktree
+  # regardless of its directory name — avoids "already checked out" failures
+  # when branches and worktree directories have drifted apart (e.g., after
+  # something like claude ran `git checkout` inside a worktree)
+  if ! $force_new_branch && [[ -z ${remote_branch-} ]]; then
+    local existing_worktree
+    existing_worktree=$(git for-each-ref --format='%(worktreepath)' "refs/heads/$branch_name" 2>/dev/null)
+    if [[ -n $existing_worktree ]]; then
+      --msg "branch '$branch_name' is checked out at: $existing_worktree"
+      cd "$existing_worktree"
+      return 0
+    fi
+  fi
 
   # 2. create or switch to the worktree
   cd "$(git rev-parse --show-toplevel)"
@@ -167,6 +182,24 @@ WTCODE_CMDS_TO_TRY=(
   )}
 
   local worktree_path="$GIT_WORKTREE_ROOT"/"$branch_name"
+
+  # if the default worktree directory exists but holds a different branch
+  # (e.g., something like claude swapped branches with `git checkout`), pick
+  # a fresh numbered suffix instead of stealing it. branch-is-checked-out
+  # case is already handled above, so we only need to check the default path.
+  if [[ -e "$worktree_path"/.git ]]; then
+    local existing_branch
+    existing_branch=$(git -C "$worktree_path" branch --show-current 2>/dev/null)
+    if [[ -n $existing_branch && $existing_branch != "$branch_name" ]]; then
+      --msg "$worktree_path holds branch '$existing_branch'; picking a new path for '$branch_name'"
+      local n=2
+      while [[ -e "$GIT_WORKTREE_ROOT/$branch_name-$n" ]]; do
+        n=$((n+1))
+      done
+      worktree_path="$GIT_WORKTREE_ROOT/$branch_name-$n"
+    fi
+  fi
+
   if [[ -e "$worktree_path"/.git ]]; then
     --msg "using existing worktree: $worktree_path"
   elif [[ -n ${remote_branch-} ]] && ! git rev-parse --verify "refs/heads/$branch_name" &>/dev/null; then
