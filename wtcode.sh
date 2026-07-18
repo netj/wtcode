@@ -39,10 +39,10 @@ Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
 Environment variables:
   WTCODE_CMD             Default tool to launch (e.g., claude, lazygit, vim)
   WTCODE_TMUX_MODE       When in tmux, control how the tool is launched:
-                           send-keys    - send command to current pane
+                           send-keys    - send command to current pane (default in tmux)
                            split-window - create split pane with send-keys
                            new-window   - create new window with send-keys
-                         (unset: exec the tool directly)
+                           exec         - exec the tool directly (opt out of send-keys)
   WTCODE_DEBUG           Enable debug tracing when set
   GIT_WORKTREE_ROOT      Override the directory where worktrees are created
 
@@ -243,42 +243,51 @@ WTCODE_CMDS_TO_TRY=(
 
   --msg "launching: $*"
 
-  # when inside tmux and WTCODE_TMUX_MODE is set, use send-keys
-  # to create the command in shell history for easy restart
-  if [[ -n ${TMUX:-} ]] && type tmux &>/dev/null && [[ -n ${WTCODE_TMUX_MODE:-} ]]; then
-    local worktree_path="$PWD"
-    # quote each argument for shell safety
-    local quoted_args=()
-    for arg in "$@"; do
-      quoted_args+=("$(printf '%q' "$arg")")
-    done
-    local cmd="cd $(printf '%q' "$worktree_path") && ${quoted_args[*]}"
+  # when inside tmux, default to send-keys for command history access
+  # set WTCODE_TMUX_MODE=exec to opt out and exec directly
+  if [[ -n ${TMUX:-} ]] && type tmux &>/dev/null; then
+    local mode=${WTCODE_TMUX_MODE:-send-keys}
 
-    case ${WTCODE_TMUX_MODE} in
-      send-keys)
-        # send to current pane
-        tmux send-keys "$cmd" Enter
-        return 0
+    case $mode in
+      send-keys|split-window|new-window)
+        local worktree_path="$PWD"
+        # quote each argument for shell safety
+        local quoted_args=()
+        for arg in "$@"; do
+          quoted_args+=("$(printf '%q' "$arg")")
+        done
+        local cmd="cd $(printf '%q' "$worktree_path") && ${quoted_args[*]}"
+
+        case $mode in
+          send-keys)
+            # send to current pane
+            tmux send-keys "$cmd" Enter
+            return 0
+            ;;
+          split-window)
+            # create split, send there
+            tmux split-window -v -c "$worktree_path"
+            tmux send-keys "$cmd" Enter
+            return 0
+            ;;
+          new-window)
+            # create window, send there
+            tmux new-window -c "$worktree_path"
+            tmux send-keys "$cmd" Enter
+            return 0
+            ;;
+        esac
         ;;
-      split-window)
-        # create split, send there
-        tmux split-window -v -c "$worktree_path"
-        tmux send-keys "$cmd" Enter
-        return 0
-        ;;
-      new-window)
-        # create window, send there
-        tmux new-window -c "$worktree_path"
-        tmux send-keys "$cmd" Enter
-        return 0
+      exec)
+        # explicitly opt out of send-keys, fall through to exec
         ;;
       *)
-        --msg "unknown WTCODE_TMUX_MODE: $WTCODE_TMUX_MODE (expected: send-keys, split-window, new-window)"
+        --msg "unknown WTCODE_TMUX_MODE: $mode (expected: send-keys, split-window, new-window, exec)"
         ;;
     esac
   fi
 
-  # outside tmux or WTCODE_TMUX_MODE unset, exec directly
+  # outside tmux, WTCODE_TMUX_MODE=exec, or unknown mode: exec directly
   if [[ $(type -t "$1") == function ]]; then
     "$@"
   else
