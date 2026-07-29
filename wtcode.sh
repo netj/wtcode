@@ -235,12 +235,16 @@ WTCODE_CMDS_TO_TRY=(
 # before dispatch -- regardless of tmux mode -- and only when the resolved
 # tool is actually `claude`. See the call site in --launch-code-tool.
 --provision-claude-settings() {
-  # auto-trust this worktree in Claude Code's global config
+  # auto-trust this worktree in Claude Code's global config. Newer Claude
+  # Code versions also gate a separate "pre-approves N tool permissions"
+  # onboarding screen (shown when .claude/settings.local.json grants
+  # auto-approve rules) that hasTrustDialogAccepted alone doesn't suppress --
+  # hasCompletedProjectOnboarding is needed too.
   if type jq &>/dev/null && [[ -f ~/.claude.json ]]; then
     (
       export worktree_path="$PWD"
       jq -e '.projects[env.worktree_path]' ~/.claude.json &>/dev/null || {
-        jq '.projects[env.worktree_path] = ({} | .hasTrustDialogAccepted = true)' \
+        jq '.projects[env.worktree_path] = ({} | .hasTrustDialogAccepted = true | .hasCompletedProjectOnboarding = true)' \
           ~/.claude.json >~/.claude.json.wtcode.$$
         mv -f ~/.claude.json.wtcode.$$ ~/.claude.json
       }
