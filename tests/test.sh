@@ -42,7 +42,7 @@ assert_contains() {
 }
 
 run_test() {
-  local name=$1 dir
+  local name=$1 dir orig_home=$HOME
   dir=$(mktemp -d)
   dir=$(cd "$dir" && pwd -P)   # canonicalize (macOS /tmp -> /private/tmp)
   cd "$dir"
@@ -54,6 +54,9 @@ run_test() {
   git commit -q --allow-empty -m initial
   export GIT_WORKTREE_ROOT="$dir/wt"
   mkdir -p "$GIT_WORKTREE_ROOT"
+  # --provision-claude-settings writes to ~/.claude.json -- redirect HOME so
+  # tests never read or mutate the real developer's global Claude Code config
+  export HOME="$dir"
 
   printf '%s ' "$name"
   if ( "$name" "$dir" ); then
@@ -75,6 +78,7 @@ run_test() {
   cd /
   rm -rf "$dir"
   unset GIT_WORKTREE_ROOT
+  export HOME=$orig_home
 }
 
 ###############################################################################
@@ -330,6 +334,38 @@ test_provisions_claude_settings_idempotent_rerun() {
     ".gitignore should not accumulate duplicate entries across reruns"
 }
 
+test_provisions_trust_flags_in_claude_json() {
+  local dir=$1
+  echo '{"projects":{}}' >"$HOME/.claude.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  local entry
+  entry=$(jq -c --arg p "$wt" '.projects[$p]' "$HOME/.claude.json")
+  assert_contains "$entry" '"hasTrustDialogAccepted":true' "trust dialog flag should be set" || return 1
+  assert_contains "$entry" '"hasCompletedProjectOnboarding":true' "project onboarding flag should be set"
+}
+
+test_trust_flags_not_overwritten_if_entry_exists() {
+  local dir=$1
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  # can't know wt's realpath before wtcode creates it, so pre-seed by branch
+  # name it will resolve to, matching how wtcode computes worktree_path
+  jq -n --arg p "$wt" '{projects: {($p): {hasTrustDialogAccepted: false}}}' >"$HOME/.claude.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local entry
+  entry=$(jq -c --arg p "$wt" '.projects[$p]' "$HOME/.claude.json")
+  assert_eq '{"hasTrustDialogAccepted":false}' "$entry" \
+    "an existing project entry must not be touched, even if incomplete"
+}
+
 test_no_provisioning_for_non_claude_tools() {
   local dir=$1
   mkdir -p "$dir/.claude"
@@ -370,6 +406,8 @@ ALL_TESTS=(
   test_provisions_claude_settings_safe_with_existing_claude_dir
   test_provisions_claude_settings_idempotent_rerun
   test_no_provisioning_for_non_claude_tools
+  test_provisions_trust_flags_in_claude_json
+  test_trust_flags_not_overwritten_if_entry_exists
 )
 
 if [[ $# -gt 0 ]]; then
