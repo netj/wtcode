@@ -70,13 +70,14 @@ WTCODE_CMD=cursor wtcode feature  # use cursor as default tool
 
 1. **Select/specify a branch** -- pass as argument or pick interactively with fzf
 2. **Create or switch to the worktree** -- worktrees are organized under `$GIT_WORKTREE_ROOT` (defaults to `../<repo>.worktrees/`)
-3. **Launch a tool** -- runs the specified command (or smart default) inside the worktree
+3. **Provision Claude Code, if that's what you're launching** -- when the resolved tool is `claude`, the worktree is auto-trusted (skips the "do you trust this folder" dialog) and `.claude/settings.json` / `.claude/settings.local.json` are symlinked in from the main repo if not already present -- never for other tools, never clobbering a file that's already there
+4. **Launch the tool** -- runs the specified command (or smart default) inside the worktree
 
 ## Dependencies
 
 - **git** -- required
 - **[fzf](https://github.com/junegunn/fzf)** -- recommended, for interactive branch selection
-- **[jq](https://jqlang.github.io/jq/)** -- optional, for Claude Code auto-trust setup
+- **[jq](https://jqlang.github.io/jq/)** -- optional, for Claude Code auto-trust setup (no dependency needed for the settings symlinking itself)
 
 ## License
 

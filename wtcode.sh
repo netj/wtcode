@@ -229,6 +229,69 @@ WTCODE_CMDS_TO_TRY=(
 }
 
 ###############################################################################
+## --provision-claude-settings -- Claude Code setup, only when launching claude
+###############################################################################
+# Everything Claude-Code-specific lives here so it runs once, synchronously,
+# before dispatch -- regardless of tmux mode -- and only when the resolved
+# tool is actually `claude`. See the call site in --launch-code-tool.
+--provision-claude-settings() {
+  # auto-trust this worktree in Claude Code's global config
+  if type jq &>/dev/null && [[ -f ~/.claude.json ]]; then
+    (
+      export worktree_path="$PWD"
+      jq -e '.projects[env.worktree_path]' ~/.claude.json &>/dev/null || {
+        jq '.projects[env.worktree_path] = ({} | .hasTrustDialogAccepted = true)' \
+          ~/.claude.json >~/.claude.json.wtcode.$$
+        mv -f ~/.claude.json.wtcode.$$ ~/.claude.json
+      }
+    )
+  fi
+
+  # symlink project-local settings from the main worktree, if not already
+  # present here -- never clobber a file that's git-tracked, hook-provisioned,
+  # or already customized in this worktree (including from a prior run: a
+  # dangling/previously-created symlink also counts as "already present").
+  local main_root
+  main_root=$(
+    git_common_dir=$(git rev-parse --git-common-dir)
+    cd "$git_common_dir"
+    cd ..
+    pwd
+  )
+  [[ -d "$main_root/.claude" ]] || return 0   # nothing to provision from
+  [[ "$main_root" == "$PWD" ]] && return 0    # already in the main worktree
+
+  local name created_names=()
+  for name in settings.json settings.local.json; do
+    local src="$main_root/.claude/$name" dst="$PWD/.claude/$name"
+    [[ -e "$src" ]] || continue                 # nothing to link
+    [[ -e "$dst" || -L "$dst" ]] && continue    # don't clobber existing/broken link
+    mkdir -p "$PWD/.claude"                     # safe no-op if .claude/ (with other content) already exists
+    ln -s "$src" "$dst"
+    --msg "symlinked .claude/$name from main worktree"
+    created_names+=("$name")
+  done
+
+  (( ${#created_names[@]} > 0 )) || return 0
+
+  local gi="$PWD/.claude/.gitignore"
+  [[ -e $gi ]] && return 0   # respect a pre-existing, possibly customized file
+
+  local already_ignored=true
+  for name in "${created_names[@]}"; do
+    git check-ignore -q ".claude/$name" || already_ignored=false
+  done
+  $already_ignored && return 0
+
+  {
+    echo '# wtcode: symlinked from the main worktree; never commit these here'
+    echo 'settings.json'
+    echo 'settings.local.json'
+  } >"$gi"
+  --msg "created .claude/.gitignore"
+}
+
+###############################################################################
 ## --launch-code-tool -- resolve and exec the tool in the worktree
 ###############################################################################
 --launch-code-tool() {
@@ -240,6 +303,8 @@ WTCODE_CMDS_TO_TRY=(
     # fall back to an interactive shell
     [[ $# -gt 0 ]] || set -- "${SHELL:-bash}"
   fi
+
+  [[ $1 == claude ]] && --provision-claude-settings
 
   --msg "launching: $*"
 
@@ -288,34 +353,7 @@ WTCODE_CMDS_TO_TRY=(
   fi
 
   # outside tmux, WTCODE_TMUX_MODE=exec, or unknown mode: exec directly
-  if [[ $(type -t "$1") == function ]]; then
-    "$@"
-  else
-    exec "$@"
-  fi
-}
-
-###############################################################################
-## Command wrappers -- override specific tools with pre-launch setup.
-## Define a function with the tool's name to add custom behavior.
-###############################################################################
-
-# claude: auto-trust the worktree in Claude Code's config
-claude() {
-  if type jq &>/dev/null && [[ -f ~/.claude.json ]]; then
-    (
-      export worktree_path="$PWD"
-      jq -e '.projects[env.worktree_path]' ~/.claude.json &>/dev/null || {
-        jq '
-          .projects[env.worktree_path] = ({}
-          | .hasTrustDialogAccepted = true
-          )
-        ' ~/.claude.json >~/.claude.json.wtcode.$$
-        mv -f ~/.claude.json.wtcode.$$ ~/.claude.json
-      }
-    )
-  fi
-  exec claude "$@"
+  exec "$@"
 }
 
 ###############################################################################
