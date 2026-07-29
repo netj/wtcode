@@ -6,6 +6,9 @@ set -uo pipefail
 
 WTCODE=$(cd "$(dirname "$0")/.." && pwd)/wtcode.sh
 unset WTCODE_DEBUG WTCODE_CMD GIT_WORKTREE_ROOT 2>/dev/null || true
+# tests must never send-keys into whatever tmux pane happens to be "current" --
+# force the exec-directly path regardless of the environment tests run in
+unset TMUX TMUX_PANE 2>/dev/null || true
 
 pass=0; fail=0; failures=()
 
@@ -31,8 +34,15 @@ assert_contains() {
   return 1
 }
 
+--fake-claude-bin() {
+  local bin; bin=$(mktemp -d)
+  printf '#!/usr/bin/env bash\npwd\n' >"$bin/claude"
+  chmod +x "$bin/claude"
+  echo "$bin"
+}
+
 run_test() {
-  local name=$1 dir
+  local name=$1 dir orig_home=$HOME
   dir=$(mktemp -d)
   dir=$(cd "$dir" && pwd -P)   # canonicalize (macOS /tmp -> /private/tmp)
   cd "$dir"
@@ -40,9 +50,13 @@ run_test() {
   git checkout -q -b main 2>/dev/null || true
   git config user.email test@example.com
   git config user.name Test
+  git config core.excludesfile /dev/null   # isolate from the dev machine's global gitignore
   git commit -q --allow-empty -m initial
   export GIT_WORKTREE_ROOT="$dir/wt"
   mkdir -p "$GIT_WORKTREE_ROOT"
+  # --provision-claude-settings writes to ~/.claude.json -- redirect HOME so
+  # tests never read or mutate the real developer's global Claude Code config
+  export HOME="$dir"
 
   printf '%s ' "$name"
   if ( "$name" "$dir" ); then
@@ -64,6 +78,7 @@ run_test() {
   cd /
   rm -rf "$dir"
   unset GIT_WORKTREE_ROOT
+  export HOME=$orig_home
 }
 
 ###############################################################################
@@ -192,6 +207,182 @@ test_existing_branch_not_checked_out_anywhere() {
 }
 
 ###############################################################################
+# tests for .claude/settings.json symlinking (provisioning only for claude)
+###############################################################################
+
+test_provisions_claude_settings_symlinks() {
+  local dir=$1
+  mkdir -p "$dir/.claude"
+  echo '{"main":"settings"}' >"$dir/.claude/settings.json"
+  echo '{"main":"local"}' >"$dir/.claude/settings.local.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  assert_eq "$dir/.claude/settings.json" "$(readlink "$wt/.claude/settings.json")" \
+    "settings.json should be symlinked to the main worktree's copy" || return 1
+  assert_eq "$dir/.claude/settings.local.json" "$(readlink "$wt/.claude/settings.local.json")" \
+    "settings.local.json should be symlinked to the main worktree's copy"
+}
+
+test_provisions_claude_settings_skips_existing_file() {
+  local dir=$1
+  mkdir -p "$dir/.claude"
+  echo '{"main":"settings"}' >"$dir/.claude/settings.json"
+  echo '{"main":"local"}' >"$dir/.claude/settings.local.json"
+
+  # simulate the worktree already having settings.local.json provisioned some
+  # other way (e.g. git-tracked, or a post-checkout hook) BEFORE wtcode runs
+  git worktree add -q "$GIT_WORKTREE_ROOT/pre" -b pre
+  mkdir -p "$GIT_WORKTREE_ROOT/pre/.claude"
+  echo '{"worktree":"local"}' >"$GIT_WORKTREE_ROOT/pre/.claude/settings.local.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" pre claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local wt="$GIT_WORKTREE_ROOT/pre"
+  if [[ -L "$wt/.claude/settings.local.json" ]]; then
+    echo "  $(red FAIL): pre-existing settings.local.json must not be replaced with a symlink" >&2
+    return 1
+  fi
+  assert_eq '{"worktree":"local"}' "$(cat "$wt/.claude/settings.local.json")" \
+    "pre-existing settings.local.json content must be untouched" || return 1
+  assert_eq "$dir/.claude/settings.json" "$(readlink "$wt/.claude/settings.json")" \
+    "settings.json (not pre-existing) should still get symlinked"
+}
+
+test_provisions_claude_gitignore_when_needed() {
+  local dir=$1
+  mkdir -p "$dir/.claude"
+  echo '{}' >"$dir/.claude/settings.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  local gi="$wt/.claude/.gitignore"
+  [[ -f $gi ]] || { echo "  $(red FAIL): .claude/.gitignore should have been created" >&2; return 1; }
+  assert_contains "$(cat "$gi")" "settings.json" "generated .gitignore should cover settings.json" || return 1
+  assert_contains "$(cat "$gi")" "settings.local.json" "generated .gitignore should cover settings.local.json"
+}
+
+test_provisions_claude_gitignore_skipped_when_already_ignored() {
+  local dir=$1
+  mkdir -p "$dir/.claude"
+  echo '{}' >"$dir/.claude/settings.json"
+  echo '.claude/' >"$dir/.gitignore"
+  git add .gitignore
+  git commit -q -m 'ignore .claude/'
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  assert_eq "$dir/.claude/settings.json" "$(readlink "$wt/.claude/settings.json")" \
+    "settings.json should still be symlinked" || return 1
+  if [[ -e "$wt/.claude/.gitignore" ]]; then
+    echo "  $(red FAIL): .claude/.gitignore should not be created when already covered by an ignore rule" >&2
+    return 1
+  fi
+  return 0
+}
+
+test_provisions_claude_settings_safe_with_existing_claude_dir() {
+  local dir=$1
+  mkdir -p "$dir/.claude"
+  echo '{}' >"$dir/.claude/settings.json"
+
+  git worktree add -q "$GIT_WORKTREE_ROOT/pre" -b pre
+  mkdir -p "$GIT_WORKTREE_ROOT/pre/.claude/commands"
+  echo '# my command' >"$GIT_WORKTREE_ROOT/pre/.claude/commands/foo.md"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" pre claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local wt="$GIT_WORKTREE_ROOT/pre"
+  assert_eq '# my command' "$(cat "$wt/.claude/commands/foo.md")" \
+    "unrelated .claude/ content must be left untouched" || return 1
+  assert_eq "$dir/.claude/settings.json" "$(readlink "$wt/.claude/settings.json")" \
+    "settings.json should still be symlinked in alongside existing content"
+}
+
+test_provisions_claude_settings_idempotent_rerun() {
+  local dir=$1
+  mkdir -p "$dir/.claude"
+  echo '{}' >"$dir/.claude/settings.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  local rc=0
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1 || rc=$?
+  rm -rf "$bin"
+
+  if [[ $rc -ne 0 ]]; then
+    echo "  $(red FAIL): second run should not error" >&2
+    return 1
+  fi
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  assert_eq "$dir/.claude/settings.json" "$(readlink "$wt/.claude/settings.json")" \
+    "settings.json symlink should be unchanged after rerun" || return 1
+  assert_eq "1" "$(grep -c settings.json "$wt/.claude/.gitignore")" \
+    ".gitignore should not accumulate duplicate entries across reruns"
+}
+
+test_provisions_trust_flags_in_claude_json() {
+  local dir=$1
+  echo '{"projects":{}}' >"$HOME/.claude.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  local entry
+  entry=$(jq -c --arg p "$wt" '.projects[$p]' "$HOME/.claude.json")
+  assert_contains "$entry" '"hasTrustDialogAccepted":true' "trust dialog flag should be set" || return 1
+  assert_contains "$entry" '"hasCompletedProjectOnboarding":true' "project onboarding flag should be set"
+}
+
+test_trust_flags_not_overwritten_if_entry_exists() {
+  local dir=$1
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  # can't know wt's realpath before wtcode creates it, so pre-seed by branch
+  # name it will resolve to, matching how wtcode computes worktree_path
+  jq -n --arg p "$wt" '{projects: {($p): {hasTrustDialogAccepted: false}}}' >"$HOME/.claude.json"
+
+  local bin; bin=$(--fake-claude-bin)
+  PATH="$bin:$PATH" "$WTCODE" newbranch claude >/dev/null 2>&1
+  rm -rf "$bin"
+
+  local entry
+  entry=$(jq -c --arg p "$wt" '.projects[$p]' "$HOME/.claude.json")
+  assert_eq '{"hasTrustDialogAccepted":false}' "$entry" \
+    "an existing project entry must not be touched, even if incomplete"
+}
+
+test_no_provisioning_for_non_claude_tools() {
+  local dir=$1
+  mkdir -p "$dir/.claude"
+  echo '{}' >"$dir/.claude/settings.json"
+  echo '{}' >"$dir/.claude/settings.local.json"
+
+  "$WTCODE" newbranch pwd >/dev/null 2>&1
+
+  local wt="$GIT_WORKTREE_ROOT/newbranch"
+  if [[ -e "$wt/.claude/settings.json" || -e "$wt/.claude/settings.local.json" || -e "$wt/.claude/.gitignore" ]]; then
+    echo "  $(red FAIL): .claude/ should not be provisioned when launching a non-claude tool" >&2
+    return 1
+  fi
+  return 0
+}
+
+###############################################################################
 # main
 ###############################################################################
 
@@ -208,6 +399,15 @@ ALL_TESTS=(
   test_after_suffix_resolves_via_precheck
   test_new_branch_default
   test_existing_branch_not_checked_out_anywhere
+  test_provisions_claude_settings_symlinks
+  test_provisions_claude_settings_skips_existing_file
+  test_provisions_claude_gitignore_when_needed
+  test_provisions_claude_gitignore_skipped_when_already_ignored
+  test_provisions_claude_settings_safe_with_existing_claude_dir
+  test_provisions_claude_settings_idempotent_rerun
+  test_no_provisioning_for_non_claude_tools
+  test_provisions_trust_flags_in_claude_json
+  test_trust_flags_not_overwritten_if_entry_exists
 )
 
 if [[ $# -gt 0 ]]; then
