@@ -43,6 +43,7 @@ wtcode --exec CMD [CMD-ARGS...]
 
 - **`BRANCH`** -- Git branch or worktree name. If omitted and [fzf](https://github.com/junegunn/fzf) is available, interactively select one. Surround with `:` to create a new branch (use `:::name` or `name:::` to avoid fzf matching the colons).
 - **`CMD`** -- Command to launch in the worktree. Defaults to `$WTCODE_CMD`, or the first available of: `claude`, `aider`, `codex`, `$SHELL`.
+  When `CMD` resolves to plain `claude` (no extra args) in a worktree that already existed, wtcode launches `claude /resume` so it opens straight into your last session there. Press `Esc` in the picker to start a new session instead.
 - **`--exec`** -- Skip the branch argument; select interactively via fzf, then launch `CMD`.
 - **`--help`** / **`--version`** -- Show help or version info.
 
