@@ -27,6 +27,14 @@ parsing. Each test spins up a throwaway repo under `mktemp -d`.
 ./tests/test.sh test_chaotic_case_branch_wins_over_dir   # run one
 ```
 
+`tests/test.sh` forces `WTCODE_TERMINAL_MODE=exec` and `WTCODE_TMUX_MODE=exec`
+(and unsets `TMUX`/`TERM_PROGRAM`/`TERMINAL_EMULATOR`) so it never fires real
+tmux send-keys or macOS AppleScript/System-Events keystrokes into whatever
+pane/tab/window happens to be current. If you add a new mechanism that
+targets "the current terminal" outside of exec, make sure it's disabled by
+one of those knobs too, or add a new one and disable it here — otherwise
+running the test suite can inject text into an unrelated live session.
+
 Manual smoke tests:
 
 ```sh
