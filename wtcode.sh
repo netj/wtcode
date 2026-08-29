@@ -79,6 +79,7 @@ WTCODE_CMDS_TO_TRY=(
 ###############################################################################
 --enter-git-worktree() {
   local branch_name=
+  WTCODE_WORKTREE_EXISTED=false
 
   # 1. determine which branch/worktree to use
   if [[ $# -gt 0 ]]; then
@@ -182,6 +183,7 @@ WTCODE_CMDS_TO_TRY=(
     if [[ -n $existing_worktree ]]; then
       --msg "branch '$branch_name' is checked out at: $existing_worktree"
       cd "$existing_worktree"
+      WTCODE_WORKTREE_EXISTED=true
       return 0
     fi
   fi
@@ -217,6 +219,7 @@ WTCODE_CMDS_TO_TRY=(
 
   if [[ -e "$worktree_path"/.git ]]; then
     --msg "using existing worktree: $worktree_path"
+    WTCODE_WORKTREE_EXISTED=true
   elif [[ -n ${remote_branch-} ]] && ! git rev-parse --verify "refs/heads/$branch_name" &>/dev/null; then
     # remote branch: create local tracking branch in a new worktree
     --msg "creating worktree for remote branch: $remote_branch"
@@ -426,6 +429,14 @@ APPLESCRIPT
     done
     # fall back to an interactive shell
     [[ $# -gt 0 ]] || set -- "${SHELL:-bash}"
+  fi
+
+  # default to resuming the last session when relaunching claude in a
+  # worktree that already existed; press Esc in the picker to start fresh
+  # instead. only kicks in when no CMD-ARGS were given, so explicit flags
+  # (e.g. `claude --resume`) are never overridden.
+  if [[ $1 == claude && $# -eq 1 && ${WTCODE_WORKTREE_EXISTED:-false} == true ]]; then
+    set -- "$1" /resume
   fi
 
   [[ $1 == claude ]] && --provision-claude-settings
