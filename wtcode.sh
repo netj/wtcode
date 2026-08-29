@@ -327,6 +327,10 @@ WTCODE_CMDS_TO_TRY=(
   local cd_cmd="cd $(@q "$worktree_path")"
   local run_cmd="$(@q "$@")"
 
+  # TODO: support Linux/general-unix terminals (and SSH sessions) too --
+  # e.g. terminals with OSC 7/6 + a way to inject text (wezterm cli,
+  # kitty @ send-text, iterm2's escape sequences, etc). For now this whole
+  # mechanism is macOS-only and returns 1 (falls back to exec) elsewhere.
   type osascript &>/dev/null || return 1
 
   local termprog=${TERM_PROGRAM-${TERMINAL_EMULATOR-}}
