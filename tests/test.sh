@@ -6,9 +6,17 @@ set -uo pipefail
 
 WTCODE=$(cd "$(dirname "$0")/.." && pwd)/wtcode.sh
 unset WTCODE_DEBUG WTCODE_CMD GIT_WORKTREE_ROOT 2>/dev/null || true
-# tests must never send-keys into whatever tmux pane happens to be "current" --
-# force the exec-directly path regardless of the environment tests run in
-unset TMUX TMUX_PANE 2>/dev/null || true
+# tests must never send-keys into whatever pane/tab/window happens to be
+# "current" -- force the exec-directly path regardless of the environment
+# tests run in. Unsetting TMUX alone is NOT enough: --terminal-send-keys
+# (the outside-tmux path, for Terminal.app/Ghostty/etc.) keys off
+# TERM_PROGRAM/TERMINAL_EMULATOR instead, which survive even with TMUX
+# unset since they describe the real GUI terminal hosting this shell (e.g.
+# the Ghostty window running your actual tmux session). Forgetting this once
+# sent real AppleScript/System-Events keystrokes into a live vim pane in an
+# unrelated tmux session.
+unset TMUX TMUX_PANE TERM_PROGRAM TERMINAL_EMULATOR 2>/dev/null || true
+export WTCODE_TERMINAL_MODE=exec WTCODE_TMUX_MODE=exec
 
 pass=0; fail=0; failures=()
 

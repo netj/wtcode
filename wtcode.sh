@@ -8,6 +8,10 @@ shopt -s extglob
 ${WTCODE_DEBUG:+set -x}
 
 --msg() { echo "wtcode: $*" >&2; }
+@q() {
+  local quoted=$({ set +x; } 2>/dev/null; exec 2>&1; PS4=; set -x; : "$@")
+  echo "${quoted:2}"  # lstrip the ': ' prefix to get the compact bash-quoted form
+}
 --sanitize-branch-name() {
   printf '%s' "$1" |
     tr '[:upper:]' '[:lower:]' |   # lowercase
@@ -42,6 +46,12 @@ Environment variables:
                            send-keys    - send command to current pane (default in tmux)
                            split-window - create split pane with send-keys
                            new-window   - create new window with send-keys
+                           exec         - exec the tool directly (opt out of send-keys)
+  WTCODE_TERMINAL_MODE   Outside tmux, control how the tool is launched:
+                           send-keys    - reuse the current tab/window via AppleScript
+                                          (default; macOS only). Terminal.app and Ghostty
+                                          1.3+ use their own scripting support; any other
+                                          terminal falls back to simulated keystrokes
                            exec         - exec the tool directly (opt out of send-keys)
   WTCODE_DEBUG           Enable debug tracing when set
   GIT_WORKTREE_ROOT      Override the directory where worktrees are created
@@ -296,6 +306,116 @@ WTCODE_CMDS_TO_TRY=(
 }
 
 ###############################################################################
+## --terminal-send-keys -- tmux-like send-keys for GUI terminal apps
+###############################################################################
+# Reuses the current tab/window in the surrounding terminal app, outside
+# tmux. cd_cmd/run_cmd are sent as two separate lines rather than one
+# `cd X && cmd` line, since the shell's PROMPT_COMMAND (what updates the
+# tab/window title via OSC 7/6) only fires between commands, at the next
+# prompt -- a single `&&` line never shows one, so the title would stay
+# stale for as long as cmd runs.
+#
+# macOS-only: dispatches on $TERM_PROGRAM by looking for a matching
+# --terminal-send-keys--macos--$TERM_PROGRAM function -- add support for
+# another terminal app by just defining one, named to match its
+# $TERM_PROGRAM value exactly. `type osascript` fails (and this returns 1)
+# on any other platform, so this whole mechanism is a no-op there and
+# callers just fall back to exec. Also returns 1 if there's no terminal
+# emulator signal (TERM_PROGRAM/TERMINAL_EMULATOR, as in ~/.zprofile) at all.
+--terminal-send-keys() {
+  local worktree_path="$PWD"
+  local cd_cmd="cd $(@q "$worktree_path")"
+  local run_cmd="$(@q "$@")"
+
+  # TODO: support Linux/general-unix terminals (and SSH sessions) too --
+  # e.g. terminals with OSC 7/6 + a way to inject text (wezterm cli,
+  # kitty @ send-text, iterm2's escape sequences, etc). For now this whole
+  # mechanism is macOS-only and returns 1 (falls back to exec) elsewhere.
+  type osascript &>/dev/null || return 1
+
+  local termprog=${TERM_PROGRAM-${TERMINAL_EMULATOR-}}
+  [[ -n $termprog ]] || return 1
+  if type -- "--terminal-send-keys--macos--$termprog" &>/dev/null; then
+    "--terminal-send-keys--macos--$termprog" "$cd_cmd" "$run_cmd"
+  else
+    --terminal-send-keys--macos--system-events "$cd_cmd" "$run_cmd"
+  fi
+}
+
+# `do script ... in front window`: reuses Terminal's front window via a real
+# Apple Event, not a keystroke. `osascript -` reads the script from stdin;
+# without it, osascript treats argv[0] as a script *file* path.
+--terminal-send-keys--macos--Apple_Terminal() {
+  local result
+  result=$(osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "Terminal"
+    try
+      repeat with line_cmd in argv
+        do script (line_cmd as text) in front window
+      end repeat
+      set frontmost of front window to true
+      return "OK"
+    on error
+      return "NOTFOUND"
+    end try
+  end tell
+end run
+APPLESCRIPT
+  ) || return 1
+  [[ $result == OK ]]
+}
+
+# Ghostty 1.3+ ships a real AppleScript dictionary: `input text ... to
+# term` targets the terminal focused in the front window's selected tab.
+# Falls back to --macos--system-events since this is still a young feature.
+--terminal-send-keys--macos--ghostty() {
+  local result rc
+  result=$(osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "Ghostty"
+    try
+      set term to focused terminal of selected tab of front window
+      repeat with line_cmd in argv
+        input text ((line_cmd as text) & "\n") to term
+      end repeat
+      return "OK"
+    on error
+      return "NOTFOUND"
+    end try
+  end tell
+end run
+APPLESCRIPT
+  ); rc=$?
+  [[ $rc -eq 0 && $result == OK ]] || --terminal-send-keys--macos--system-events "$@"
+}
+
+# Last resort: fake keystrokes via System Events (needs Accessibility
+# permission). No `activate` call -- $TERM_PROGRAM isn't always a real app
+# name, so this relies on the calling terminal still being frontmost.
+--terminal-send-keys--macos--system-events() {
+  local result
+  result=$(osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "System Events"
+    try
+      repeat with line_cmd in argv
+        keystroke (line_cmd as text)
+        key code 36 -- Return
+        delay 0.05
+      end repeat
+      return "OK"
+    on error
+      return "NOTFOUND"
+    end try
+  end tell
+end run
+APPLESCRIPT
+  ) || return 1
+  [[ $result == OK ]]
+}
+
+###############################################################################
 ## --launch-code-tool -- resolve and exec the tool in the worktree
 ###############################################################################
 --launch-code-tool() {
@@ -320,12 +440,7 @@ WTCODE_CMDS_TO_TRY=(
     case $mode in
       send-keys|split-window|new-window)
         local worktree_path="$PWD"
-        # quote each argument for shell safety
-        local quoted_args=()
-        for arg in "$@"; do
-          quoted_args+=("$(printf '%q' "$arg")")
-        done
-        local cmd="cd $(printf '%q' "$worktree_path") && ${quoted_args[*]}"
+        local cmd="cd $(@q "$worktree_path") && $(@q "$@")"
 
         case $mode in
           send-keys)
@@ -356,7 +471,27 @@ WTCODE_CMDS_TO_TRY=(
     esac
   fi
 
-  # outside tmux, WTCODE_TMUX_MODE=exec, or unknown mode: exec directly
+  # outside tmux: reuse the current tab/window if the terminal app supports
+  # it (see --terminal-send-keys). set WTCODE_TERMINAL_MODE=exec to opt out
+  if [[ -z ${TMUX:-} ]]; then
+    local mode=${WTCODE_TERMINAL_MODE:-send-keys}
+    case $mode in
+      send-keys)
+        if --terminal-send-keys "$@"; then
+          return 0
+        fi
+        --msg "could not reuse the current tab/window; falling back to exec"
+        ;;
+      exec)
+        # explicitly opt out of send-keys, fall through to exec
+        ;;
+      *)
+        --msg "unknown WTCODE_TERMINAL_MODE: $mode (expected: send-keys, exec)"
+        ;;
+    esac
+  fi
+
+  # outside tmux, WTCODE_TMUX_MODE=exec, unsupported terminal, or unknown mode: exec directly
   exec "$@"
 }
 
