@@ -315,11 +315,13 @@ WTCODE_CMDS_TO_TRY=(
 # prompt -- a single `&&` line never shows one, so the title would stay
 # stale for as long as cmd runs.
 #
-# macOS-only: dispatches on $TERM_PROGRAM to that app's AppleScript
-# scripting support. `type osascript` fails (and this returns 1) on any
-# other platform, so this whole mechanism is a no-op there and callers just
-# fall back to exec. Also returns 1 if the terminal app isn't supported or
-# the attempt otherwise fails.
+# macOS-only: dispatches on $TERM_PROGRAM by looking for a matching
+# --terminal-send-keys--macos--$TERM_PROGRAM function -- add support for
+# another terminal app by just defining one, named to match its
+# $TERM_PROGRAM value exactly. `type osascript` fails (and this returns 1)
+# on any other platform, so this whole mechanism is a no-op there and
+# callers just fall back to exec. Also returns 1 if there's no terminal
+# emulator signal (TERM_PROGRAM/TERMINAL_EMULATOR, as in ~/.zprofile) at all.
 --terminal-send-keys() {
   local worktree_path="$PWD"
   local cd_cmd="cd $(@q "$worktree_path")"
@@ -327,20 +329,19 @@ WTCODE_CMDS_TO_TRY=(
 
   type osascript &>/dev/null || return 1
 
-  # using TERM_PROGRAM to see if we're really inside a terminal emulator
-  # (or TERMINAL_EMULATOR used by PyCharm)
-  case ${TERM_PROGRAM-${TERMINAL_EMULATOR-}} in
-    Apple_Terminal) --terminal-send-keys--macos--apple-terminal "$cd_cmd" "$run_cmd" ;;
-    ghostty)        --terminal-send-keys--macos--ghostty "$cd_cmd" "$run_cmd" ;;
-    "")             return 1 ;;
-    *)              --terminal-send-keys--macos--system-events "$cd_cmd" "$run_cmd" ;;
-  esac
+  local termprog=${TERM_PROGRAM-${TERMINAL_EMULATOR-}}
+  [[ -n $termprog ]] || return 1
+  if type -- "--terminal-send-keys--macos--$termprog" &>/dev/null; then
+    "--terminal-send-keys--macos--$termprog" "$cd_cmd" "$run_cmd"
+  else
+    --terminal-send-keys--macos--system-events "$cd_cmd" "$run_cmd"
+  fi
 }
 
 # `do script ... in front window`: reuses Terminal's front window via a real
 # Apple Event, not a keystroke. `osascript -` reads the script from stdin;
 # without it, osascript treats argv[0] as a script *file* path.
---terminal-send-keys--macos--apple-terminal() {
+--terminal-send-keys--macos--Apple_Terminal() {
   local result
   result=$(osascript - "$@" <<'APPLESCRIPT'
 on run argv
