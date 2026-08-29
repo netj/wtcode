@@ -327,29 +327,21 @@ WTCODE_CMDS_TO_TRY=(
 
   type osascript &>/dev/null || return 1
 
-  case ${TERM_PROGRAM:-} in
-    Apple_Terminal) --terminal-send-keys--apple-terminal "$cd_cmd" "$run_cmd" ;;
-    ghostty)        --terminal-send-keys--ghostty "$cd_cmd" "$run_cmd" ;;
-    *)
-      # unrecognized terminal app: only even attempt this if something
-      # (TERM_PROGRAM or TERMINAL_EMULATOR) actually signals we're inside a
-      # real terminal emulator -- same signal used in ~/.zprofile for this.
-      [[ -n ${TERM_PROGRAM:-}${TERMINAL_EMULATOR:-} ]] || return 1
-      --terminal-send-keys--system-events "$cd_cmd" "$run_cmd"
-      ;;
+  # using TERM_PROGRAM to see if we're really inside a terminal emulator
+  # (or TERMINAL_EMULATOR used by PyCharm)
+  case ${TERM_PROGRAM-${TERMINAL_EMULATOR-}} in
+    Apple_Terminal) --terminal-send-keys--macos--apple-terminal "$cd_cmd" "$run_cmd" ;;
+    ghostty)        --terminal-send-keys--macos--ghostty "$cd_cmd" "$run_cmd" ;;
+    "")             return 1 ;;
+    *)              --terminal-send-keys--macos--system-events "$cd_cmd" "$run_cmd" ;;
   esac
 }
 
-# Terminal.app via AppleScript: target its "front window" (Terminal's own
-# most-recently-active window, independent of macOS's global app focus)
-# with `do script ... in front window` -- a real Apple Event, not a
-# simulated keystroke.
---terminal-send-keys--apple-terminal() {
+# `do script ... in front window`: reuses Terminal's front window via a real
+# Apple Event, not a keystroke. `osascript -` reads the script from stdin;
+# without it, osascript treats argv[0] as a script *file* path.
+--terminal-send-keys--macos--apple-terminal() {
   local result
-  # each line is passed as argv, not interpolated into the script text, so
-  # no AppleScript/shell escaping is needed. The leading "-" tells osascript
-  # to read the script from stdin (the heredoc) -- without it, osascript
-  # treats the argv items as script *file* paths.
   result=$(osascript - "$@" <<'APPLESCRIPT'
 on run argv
   tell application "Terminal"
@@ -369,12 +361,11 @@ APPLESCRIPT
   [[ $result == OK ]]
 }
 
-# Ghostty (1.3+) via its own AppleScript dictionary: target the terminal
-# focused in the front window's selected tab, and use `input text ... to
-# term` -- a real Apple Event, like Terminal.app's `do script`, not a
-# simulated keystroke.
---terminal-send-keys--ghostty() {
-  local result
+# Ghostty 1.3+ ships a real AppleScript dictionary: `input text ... to
+# term` targets the terminal focused in the front window's selected tab.
+# Falls back to --macos--system-events since this is still a young feature.
+--terminal-send-keys--macos--ghostty() {
+  local result rc
   result=$(osascript - "$@" <<'APPLESCRIPT'
 on run argv
   tell application "Ghostty"
@@ -390,20 +381,14 @@ on run argv
   end tell
 end run
 APPLESCRIPT
-  ) || return 1
-  [[ $result == OK ]]
+  ); rc=$?
+  [[ $rc -eq 0 && $result == OK ]] || --terminal-send-keys--macos--system-events "$@"
 }
 
-# Last-resort fallback for terminal apps with no scripting bridge of their
-# own: have System Events literally type each line and press Return. This
-# needs Accessibility permission granted to whatever runs osascript.
-#
-# Deliberately doesn't `activate` any app first (unlike the app-specific
-# paths above, we don't reliably know a valid application name to activate
-# here -- $TERM_PROGRAM values aren't always one). Instead this relies on
-# the calling terminal still being the focused app, which holds since
-# wtcode.sh runs synchronously right after the user invoked it there.
---terminal-send-keys--system-events() {
+# Last resort: fake keystrokes via System Events (needs Accessibility
+# permission). No `activate` call -- $TERM_PROGRAM isn't always a real app
+# name, so this relies on the calling terminal still being frontmost.
+--terminal-send-keys--macos--system-events() {
   local result
   result=$(osascript - "$@" <<'APPLESCRIPT'
 on run argv
