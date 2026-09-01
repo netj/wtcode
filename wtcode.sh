@@ -129,9 +129,13 @@ WTCODE_CMDS_TO_TRY=(
         printf '%s\t%s %s\t%s  %s %s%s\n' \
           "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject"
       done |
-      fzf --ansi --color --tmux --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
+      fzf --ansi --color --tmux 90%,70% --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
           --preview 'echo {3}' --preview-window 'down:2:wrap' \
-          --prompt 'wtcode: select worktree/branch (prefix : to create new) > ' |
+          --header "$(
+              echo '[wtcode] Select the worktree/branch or create new to launch your code tool in it.'
+              echo '         Typing colons `:` avoids selecting an existing one to create new with similar names.'
+          )" \
+          --prompt '> ' |
       cut -f1 |
       tail -1
     )
