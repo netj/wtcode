@@ -45,6 +45,19 @@ Manual smoke tests:
 uvx --from . wtcode --version           # test PyPI wrapper
 ```
 
+If your current shell is itself inside tmux (true for an agent shell running
+inside the user's tmux session), any manual `./wtcode.sh ...` invocation
+that reaches `--launch-code-tool` picks the tmux branch first — whenever
+`$TMUX` is set, `WTCODE_TERMINAL_MODE` is irrelevant. Setting only
+`WTCODE_TERMINAL_MODE=exec` and forgetting `WTCODE_TMUX_MODE=exec` still
+lets it default to `send-keys` and fire real keystrokes into whatever pane
+is current, possibly one the user is actively watching. Always set **both**
+when manually testing:
+
+```sh
+WTCODE_TERMINAL_MODE=exec WTCODE_TMUX_MODE=exec ./wtcode.sh BRANCH echo hello
+```
+
 ## Release checklist
 
 1. Bump version in all three places (see above)
