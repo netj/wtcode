@@ -5,6 +5,14 @@
 # Created: 2026-02-03
 set -eu
 shopt -s extglob
+
+# declare all WTCODE_* env vars and their defaults in one place
+: ${WTCODE_CMD:=}
+: ${WTCODE_USE_CURRENT_BRANCH:=false}
+: ${WTCODE_TMUX_MODE:=send-keys}
+: ${WTCODE_TERMINAL_MODE:=send-keys}
+: ${WTCODE_DEBUG:=}
+
 ${WTCODE_DEBUG:+set -x}
 
 --msg() { echo "wtcode: $*" >&2; }
@@ -42,6 +50,10 @@ Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
 
 Environment variables:
   WTCODE_CMD             Default tool to launch (e.g., claude, lazygit, vim)
+  WTCODE_USE_CURRENT_BRANCH
+                         When creating a brand-new branch, fork it from the
+                         current HEAD instead of the default: origin/HEAD
+                         (falling back to origin/main, then origin/master)
   WTCODE_TMUX_MODE       When in tmux, control how the tool is launched:
                            send-keys    - send command to current pane (default in tmux)
                            split-window - create split pane with send-keys
@@ -68,11 +80,32 @@ USAGE
 
 # commands to try as default, in order of preference
 WTCODE_CMDS_TO_TRY=(
-    ${WTCODE_CMD:-}
+    $WTCODE_CMD
     claude
     aider
     codex
 )
+
+###############################################################################
+## --default-base-ref -- ref to fork a brand-new branch from
+###############################################################################
+# defaults to origin/HEAD (falling back to origin/main, then origin/master),
+# so new worktrees start from the repo's default branch instead of whatever
+# happens to be checked out where wtcode was invoked. set
+# WTCODE_USE_CURRENT_BRANCH=true to restore the old behavior of forking from
+# the current HEAD. only consults local remote-tracking refs -- never
+# touches the network.
+--default-base-ref() {
+  if [[ $WTCODE_USE_CURRENT_BRANCH == true ]]; then
+    git rev-parse HEAD
+    return
+  fi
+  local ref
+  for ref in origin/HEAD origin/main origin/master; do
+    git rev-parse --verify -q "$ref" &>/dev/null && { echo "$ref"; return; }
+  done
+  git rev-parse HEAD
+}
 
 ###############################################################################
 ## --enter-git-worktree -- select branch and create/switch worktree
@@ -234,9 +267,14 @@ WTCODE_CMDS_TO_TRY=(
     --msg "creating worktree for branch: $branch_name"
     git worktree add -B "$branch_name" "$worktree_path" "$(git rev-parse "$branch_name")"
   else
-    # fork the current HEAD and create the new worktree
-    --msg "creating worktree with new branch: $branch_name"
-    git worktree add -b "$branch_name" "$worktree_path" "$(git rev-parse HEAD)"
+    # fork a base ref and create the new worktree: defaults to origin/HEAD
+    # (falling back to origin/main, origin/master, then the current HEAD);
+    # set WTCODE_USE_CURRENT_BRANCH=true to always fork from the current
+    # branch instead
+    local base_ref
+    base_ref=$(--default-base-ref)
+    --msg "creating worktree with new branch: $branch_name (from $base_ref)"
+    git worktree add -b "$branch_name" "$worktree_path" "$base_ref"
   fi
   cd "$worktree_path"
 
@@ -450,7 +488,7 @@ APPLESCRIPT
   # when inside tmux, default to send-keys for command history access
   # set WTCODE_TMUX_MODE=exec to opt out and exec directly
   if [[ -n ${TMUX:-} ]] && type tmux &>/dev/null; then
-    local mode=${WTCODE_TMUX_MODE:-send-keys}
+    local mode=$WTCODE_TMUX_MODE
 
     case $mode in
       send-keys|split-window|new-window)
@@ -489,7 +527,7 @@ APPLESCRIPT
   # outside tmux: reuse the current tab/window if the terminal app supports
   # it (see --terminal-send-keys). set WTCODE_TERMINAL_MODE=exec to opt out
   if [[ -z ${TMUX:-} ]]; then
-    local mode=${WTCODE_TERMINAL_MODE:-send-keys}
+    local mode=$WTCODE_TERMINAL_MODE
     case $mode in
       send-keys)
         if --terminal-send-keys "$@"; then
