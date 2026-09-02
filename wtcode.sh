@@ -138,7 +138,7 @@ WTCODE_CMDS_TO_TRY=(
         [[ $remote_ref == */HEAD ]] && continue
         local_name=${remote_ref#*/}
         grep -qxF "$local_name" <<< "$local_branches" && continue
-        printf 'x%s\t%s\n' "$remote_ref" "$rest"
+        printf 'x%s\t%s\n' "$remote_ref" "$rest" || break
       done
       } |
       while IFS=$'\t' read -r branch head worktree date hash upstream subject; do
@@ -160,7 +160,7 @@ WTCODE_CMDS_TO_TRY=(
         hash_shown="${c_yellow}${hash}${c_reset}"
         if [[ -n $upstream ]]; then upstream_shown="${c_red}${upstream}${c_reset} "; else upstream_shown=''; fi
         printf '%s\t%s %s\t%s  %s %s%s\n' \
-          "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject"
+          "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject" || break
       done |
       fzf --ansi --color --tmux 90%,70% --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
           --preview 'echo {3}' --preview-window 'down:2:wrap' \
