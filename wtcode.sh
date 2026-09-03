@@ -6,11 +6,27 @@
 set -eu
 shopt -s extglob
 
+# detect well-known AI coding agents via the env vars they set on their own
+# subprocesses -- send-keys/AppleScript fire into whatever pane/tab/window
+# happens to be current, which is unsafe to do behind an agent's back while
+# it's working (it may be a pane/window the user is watching, or one running
+# an unrelated task). exec is always safe: it just replaces the agent's own
+# child process.
+--running-under-coding-agent() {
+  [[ -n ${CLAUDECODE:-} || -n ${CURSOR_AGENT:-} || -n ${GEMINI_CLI:-} ||
+     -n ${CODEX_SANDBOX:-} || -n ${CODEX_SANDBOX_NETWORK_DISABLED:-} ]]
+}
+
 # declare all WTCODE_* env vars and their defaults in one place
 : ${WTCODE_CMD:=}
 : ${WTCODE_USE_CURRENT_BRANCH:=false}
-: ${WTCODE_TMUX_MODE:=send-keys}
-: ${WTCODE_TERMINAL_MODE:=send-keys}
+if --running-under-coding-agent; then
+  : ${WTCODE_TMUX_MODE:=exec}
+  : ${WTCODE_TERMINAL_MODE:=exec}
+else
+  : ${WTCODE_TMUX_MODE:=send-keys}
+  : ${WTCODE_TERMINAL_MODE:=send-keys}
+fi
 : ${WTCODE_DEBUG:=}
 
 ${WTCODE_DEBUG:+set -x}
@@ -55,16 +71,26 @@ Environment variables:
                          current HEAD instead of the default: origin/HEAD
                          (falling back to origin/main, then origin/master)
   WTCODE_TMUX_MODE       When in tmux, control how the tool is launched:
-                           send-keys    - send command to current pane (default in tmux)
+                           send-keys    - send command to current pane (default in tmux,
+                                          unless run by a known AI coding agent -- see below)
                            split-window - create split pane with send-keys
                            new-window   - create new window with send-keys
                            exec         - exec the tool directly (opt out of send-keys)
   WTCODE_TERMINAL_MODE   Outside tmux, control how the tool is launched:
                            send-keys    - reuse the current tab/window via AppleScript
-                                          (default; macOS only). Terminal.app and Ghostty
-                                          1.3+ use their own scripting support; any other
-                                          terminal falls back to simulated keystrokes
+                                          (default; macOS only, unless run by a known AI
+                                          coding agent -- see below). Terminal.app and
+                                          Ghostty 1.3+ use their own scripting support;
+                                          any other terminal falls back to simulated
+                                          keystrokes
                            exec         - exec the tool directly (opt out of send-keys)
+
+                         When wtcode is invoked by a known AI coding agent (detected via
+                         CLAUDECODE, CURSOR_AGENT, GEMINI_CLI, CODEX_SANDBOX, or
+                         CODEX_SANDBOX_NETWORK_DISABLED), both modes default to exec
+                         instead of send-keys, since send-keys/AppleScript would inject
+                         keystrokes into a pane/tab/window the agent doesn't control while
+                         it's still working. Set the env var explicitly to override.
   WTCODE_DEBUG           Enable debug tracing when set
   GIT_WORKTREE_ROOT      Override the directory where worktrees are created
 
