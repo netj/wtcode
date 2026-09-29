@@ -13,7 +13,9 @@ ${WTCODE_DEBUG:+set -x}
     tr '[:upper:]' '[:lower:]' |   # lowercase
     sed 's/[^a-z0-9/_-]/-/g' |     # replace non-alnum to hyphens
     sed 's/--*/-/g' |              # collapse consecutive hyphens
-    sed 's/^-//; s/-$//'           # trim leading/trailing hyphens
+    sed 's|//*|/|g' |              # collapse consecutive slashes
+    sed 's|-*/-*|/|g' |            # no hyphens adjacent to slashes
+    sed 's|^[-/]*||; s|[-/]*$||'   # trim leading/trailing hyphens/slashes
 }
 
 WTCODE_VERSION=0.1.4
