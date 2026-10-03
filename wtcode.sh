@@ -5,9 +5,37 @@
 # Created: 2026-02-03
 set -eu
 shopt -s extglob
+
+# detect well-known AI coding agents via the env vars they set on their own
+# subprocesses -- send-keys/AppleScript fire into whatever pane/tab/window
+# happens to be current, which is unsafe to do behind an agent's back while
+# it's working (it may be a pane/window the user is watching, or one running
+# an unrelated task). exec is always safe: it just replaces the agent's own
+# child process.
+--running-under-coding-agent() {
+  [[ -n ${CLAUDECODE:-} || -n ${CURSOR_AGENT:-} || -n ${GEMINI_CLI:-} ||
+     -n ${CODEX_SANDBOX:-} || -n ${CODEX_SANDBOX_NETWORK_DISABLED:-} ]]
+}
+
+# declare all WTCODE_* env vars and their defaults in one place
+: ${WTCODE_CMD:=}
+: ${WTCODE_USE_CURRENT_BRANCH:=false}
+if --running-under-coding-agent; then
+  : ${WTCODE_TMUX_MODE:=exec}
+  : ${WTCODE_TERMINAL_MODE:=exec}
+else
+  : ${WTCODE_TMUX_MODE:=send-keys}
+  : ${WTCODE_TERMINAL_MODE:=send-keys}
+fi
+: ${WTCODE_DEBUG:=}
+
 ${WTCODE_DEBUG:+set -x}
 
 --msg() { echo "wtcode: $*" >&2; }
+@q() {
+  local quoted=$({ set +x; } 2>/dev/null; exec 2>&1; PS4=; set -x; : "$@")
+  echo "${quoted:2}"  # lstrip the ': ' prefix to get the compact bash-quoted form
+}
 --sanitize-branch-name() {
   printf '%s' "$1" |
     tr '[:upper:]' '[:lower:]' |   # lowercase
@@ -18,7 +46,7 @@ ${WTCODE_DEBUG:+set -x}
     sed 's|^[-/]*||; s|[-/]*$||'   # trim leading/trailing hyphens/slashes
 }
 
-WTCODE_VERSION=0.1.4
+WTCODE_VERSION=0.6.0
 --version() { echo "wtcode $WTCODE_VERSION"; }
 --help() {
   cat <<USAGE
@@ -40,6 +68,31 @@ Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
 
 Environment variables:
   WTCODE_CMD             Default tool to launch (e.g., claude, lazygit, vim)
+  WTCODE_USE_CURRENT_BRANCH
+                         When creating a brand-new branch, fork it from the
+                         current HEAD instead of the default: origin/HEAD
+                         (falling back to origin/main, then origin/master)
+  WTCODE_TMUX_MODE       When in tmux, control how the tool is launched:
+                           send-keys    - send command to current pane (default in tmux,
+                                          unless run by a known AI coding agent -- see below)
+                           split-window - create split pane with send-keys
+                           new-window   - create new window with send-keys
+                           exec         - exec the tool directly (opt out of send-keys)
+  WTCODE_TERMINAL_MODE   Outside tmux, control how the tool is launched:
+                           send-keys    - reuse the current tab/window via AppleScript
+                                          (default; macOS only, unless run by a known AI
+                                          coding agent -- see below). Terminal.app and
+                                          Ghostty 1.3+ use their own scripting support;
+                                          any other terminal falls back to simulated
+                                          keystrokes
+                           exec         - exec the tool directly (opt out of send-keys)
+
+                         When wtcode is invoked by a known AI coding agent (detected via
+                         CLAUDECODE, CURSOR_AGENT, GEMINI_CLI, CODEX_SANDBOX, or
+                         CODEX_SANDBOX_NETWORK_DISABLED), both modes default to exec
+                         instead of send-keys, since send-keys/AppleScript would inject
+                         keystrokes into a pane/tab/window the agent doesn't control while
+                         it's still working. Set the env var explicitly to override.
   WTCODE_DEBUG           Enable debug tracing when set
   GIT_WORKTREE_ROOT      Override the directory where worktrees are created
 
@@ -55,17 +108,39 @@ USAGE
 
 # commands to try as default, in order of preference
 WTCODE_CMDS_TO_TRY=(
-    ${WTCODE_CMD:-}
+    $WTCODE_CMD
     claude
     aider
     codex
 )
 
 ###############################################################################
+## --default-base-ref -- ref to fork a brand-new branch from
+###############################################################################
+# defaults to origin/HEAD (falling back to origin/main, then origin/master),
+# so new worktrees start from the repo's default branch instead of whatever
+# happens to be checked out where wtcode was invoked. set
+# WTCODE_USE_CURRENT_BRANCH=true to restore the old behavior of forking from
+# the current HEAD. only consults local remote-tracking refs -- never
+# touches the network.
+--default-base-ref() {
+  if [[ $WTCODE_USE_CURRENT_BRANCH == true ]]; then
+    git rev-parse HEAD
+    return
+  fi
+  local ref
+  for ref in origin/HEAD origin/main origin/master; do
+    git rev-parse --verify -q "$ref" &>/dev/null && { echo "$ref"; return; }
+  done
+  git rev-parse HEAD
+}
+
+###############################################################################
 ## --enter-git-worktree -- select branch and create/switch worktree
 ###############################################################################
 --enter-git-worktree() {
   local branch_name=
+  WTCODE_WORKTREE_EXISTED=false
 
   # 1. determine which branch/worktree to use
   if [[ $# -gt 0 ]]; then
@@ -91,7 +166,7 @@ WTCODE_CMDS_TO_TRY=(
         [[ $remote_ref == */HEAD ]] && continue
         local_name=${remote_ref#*/}
         grep -qxF "$local_name" <<< "$local_branches" && continue
-        printf 'x%s\t%s\n' "$remote_ref" "$rest"
+        printf 'x%s\t%s\n' "$remote_ref" "$rest" || break
       done
       } |
       while IFS=$'\t' read -r branch head worktree date hash upstream subject; do
@@ -113,11 +188,15 @@ WTCODE_CMDS_TO_TRY=(
         hash_shown="${c_yellow}${hash}${c_reset}"
         if [[ -n $upstream ]]; then upstream_shown="${c_red}${upstream}${c_reset} "; else upstream_shown=''; fi
         printf '%s\t%s %s\t%s  %s %s%s\n' \
-          "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject"
+          "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject" || break
       done |
-      fzf --ansi --color --tmux --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
+      fzf --ansi --color --tmux 90%,70% --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
           --preview 'echo {3}' --preview-window 'down:2:wrap' \
-          --prompt 'wtcode: select worktree/branch (prefix : to create new) > ' |
+          --header "$(
+              echo '[wtcode] Select the worktree/branch or create new to launch your code tool in it.'
+              echo '         Typing colons `:` avoids selecting an existing one to create new with similar names.'
+          )" \
+          --prompt '> ' |
       cut -f1 |
       tail -1
     )
@@ -169,6 +248,7 @@ WTCODE_CMDS_TO_TRY=(
     if [[ -n $existing_worktree ]]; then
       --msg "branch '$branch_name' is checked out at: $existing_worktree"
       cd "$existing_worktree"
+      WTCODE_WORKTREE_EXISTED=true
       return 0
     fi
   fi
@@ -204,6 +284,7 @@ WTCODE_CMDS_TO_TRY=(
 
   if [[ -e "$worktree_path"/.git ]]; then
     --msg "using existing worktree: $worktree_path"
+    WTCODE_WORKTREE_EXISTED=true
   elif [[ -n ${remote_branch-} ]] && ! git rev-parse --verify "refs/heads/$branch_name" &>/dev/null; then
     # remote branch: create local tracking branch in a new worktree
     --msg "creating worktree for remote branch: $remote_branch"
@@ -214,15 +295,197 @@ WTCODE_CMDS_TO_TRY=(
     --msg "creating worktree for branch: $branch_name"
     git worktree add -B "$branch_name" "$worktree_path" "$(git rev-parse "$branch_name")"
   else
-    # fork the current HEAD and create the new worktree
-    --msg "creating worktree with new branch: $branch_name"
-    git worktree add -b "$branch_name" "$worktree_path" "$(git rev-parse HEAD)"
+    # fork a base ref and create the new worktree: defaults to origin/HEAD
+    # (falling back to origin/main, origin/master, then the current HEAD);
+    # set WTCODE_USE_CURRENT_BRANCH=true to always fork from the current
+    # branch instead
+    local base_ref
+    base_ref=$(--default-base-ref)
+    --msg "creating worktree with new branch: $branch_name (from $base_ref)"
+    git worktree add -b "$branch_name" "$worktree_path" "$base_ref"
   fi
   cd "$worktree_path"
 
   # ensure the branch is checked out on the worktree
   [[ $(git branch --show-current) = $branch_name ]] ||
     git checkout "$branch_name" --
+}
+
+###############################################################################
+## --provision-claude-settings -- Claude Code setup, only when launching claude
+###############################################################################
+# Everything Claude-Code-specific lives here so it runs once, synchronously,
+# before dispatch -- regardless of tmux mode -- and only when the resolved
+# tool is actually `claude`. See the call site in --launch-code-tool.
+--provision-claude-settings() {
+  # auto-trust this worktree in Claude Code's global config. Newer Claude
+  # Code versions also gate a separate "pre-approves N tool permissions"
+  # onboarding screen (shown when .claude/settings.local.json grants
+  # auto-approve rules) that hasTrustDialogAccepted alone doesn't suppress --
+  # hasCompletedProjectOnboarding is needed too.
+  if type jq &>/dev/null && [[ -f ~/.claude.json ]]; then
+    (
+      export worktree_path="$PWD"
+      jq -e '.projects[env.worktree_path]' ~/.claude.json &>/dev/null || {
+        jq '.projects[env.worktree_path] = ({} | .hasTrustDialogAccepted = true | .hasCompletedProjectOnboarding = true)' \
+          ~/.claude.json >~/.claude.json.wtcode.$$
+        mv -f ~/.claude.json.wtcode.$$ ~/.claude.json
+      }
+    )
+  fi
+
+  # symlink project-local settings from the main worktree, if not already
+  # present here -- never clobber a file that's git-tracked, hook-provisioned,
+  # or already customized in this worktree (including from a prior run: a
+  # dangling/previously-created symlink also counts as "already present").
+  local main_root
+  main_root=$(
+    git_common_dir=$(git rev-parse --git-common-dir)
+    cd "$git_common_dir"
+    cd ..
+    pwd
+  )
+  [[ -d "$main_root/.claude" ]] || return 0   # nothing to provision from
+  [[ "$main_root" == "$PWD" ]] && return 0    # already in the main worktree
+
+  local name created_names=()
+  for name in settings.json settings.local.json; do
+    local src="$main_root/.claude/$name" dst="$PWD/.claude/$name"
+    [[ -e "$src" ]] || continue                 # nothing to link
+    [[ -e "$dst" || -L "$dst" ]] && continue    # don't clobber existing/broken link
+    mkdir -p "$PWD/.claude"                     # safe no-op if .claude/ (with other content) already exists
+    ln -s "$src" "$dst"
+    --msg "symlinked .claude/$name from main worktree"
+    created_names+=("$name")
+  done
+
+  (( ${#created_names[@]} > 0 )) || return 0
+
+  local gi="$PWD/.claude/.gitignore"
+  [[ -e $gi ]] && return 0   # respect a pre-existing, possibly customized file
+
+  local already_ignored=true
+  for name in "${created_names[@]}"; do
+    git check-ignore -q ".claude/$name" || already_ignored=false
+  done
+  $already_ignored && return 0
+
+  {
+    echo '# wtcode: symlinked from the main worktree; never commit these here'
+    echo 'settings.json'
+    echo 'settings.local.json'
+  } >"$gi"
+  --msg "created .claude/.gitignore"
+}
+
+###############################################################################
+## --terminal-send-keys -- tmux-like send-keys for GUI terminal apps
+###############################################################################
+# Reuses the current tab/window in the surrounding terminal app, outside
+# tmux. cd_cmd/run_cmd are sent as two separate lines rather than one
+# `cd X && cmd` line, since the shell's PROMPT_COMMAND (what updates the
+# tab/window title via OSC 7/6) only fires between commands, at the next
+# prompt -- a single `&&` line never shows one, so the title would stay
+# stale for as long as cmd runs.
+#
+# macOS-only: dispatches on $TERM_PROGRAM by looking for a matching
+# --terminal-send-keys--macos--$TERM_PROGRAM function -- add support for
+# another terminal app by just defining one, named to match its
+# $TERM_PROGRAM value exactly. `type osascript` fails (and this returns 1)
+# on any other platform, so this whole mechanism is a no-op there and
+# callers just fall back to exec. Also returns 1 if there's no terminal
+# emulator signal (TERM_PROGRAM/TERMINAL_EMULATOR, as in ~/.zprofile) at all.
+--terminal-send-keys() {
+  local worktree_path="$PWD"
+  local cd_cmd="cd $(@q "$worktree_path")"
+  local run_cmd="$(@q "$@")"
+
+  # TODO: support Linux/general-unix terminals (and SSH sessions) too --
+  # e.g. terminals with OSC 7/6 + a way to inject text (wezterm cli,
+  # kitty @ send-text, iterm2's escape sequences, etc). For now this whole
+  # mechanism is macOS-only and returns 1 (falls back to exec) elsewhere.
+  type osascript &>/dev/null || return 1
+
+  local termprog=${TERM_PROGRAM-${TERMINAL_EMULATOR-}}
+  [[ -n $termprog ]] || return 1
+  if type -- "--terminal-send-keys--macos--$termprog" &>/dev/null; then
+    "--terminal-send-keys--macos--$termprog" "$cd_cmd" "$run_cmd"
+  else
+    --terminal-send-keys--macos--system-events "$cd_cmd" "$run_cmd"
+  fi
+}
+
+# `do script ... in front window`: reuses Terminal's front window via a real
+# Apple Event, not a keystroke. `osascript -` reads the script from stdin;
+# without it, osascript treats argv[0] as a script *file* path.
+--terminal-send-keys--macos--Apple_Terminal() {
+  local result
+  result=$(osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "Terminal"
+    try
+      repeat with line_cmd in argv
+        do script (line_cmd as text) in front window
+      end repeat
+      set frontmost of front window to true
+      return "OK"
+    on error
+      return "NOTFOUND"
+    end try
+  end tell
+end run
+APPLESCRIPT
+  ) || return 1
+  [[ $result == OK ]]
+}
+
+# Ghostty 1.3+ ships a real AppleScript dictionary: `input text ... to
+# term` targets the terminal focused in the front window's selected tab.
+# Falls back to --macos--system-events since this is still a young feature.
+--terminal-send-keys--macos--ghostty() {
+  local result rc
+  result=$(osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "Ghostty"
+    try
+      set term to focused terminal of selected tab of front window
+      repeat with line_cmd in argv
+        input text ((line_cmd as text) & "\n") to term
+      end repeat
+      return "OK"
+    on error
+      return "NOTFOUND"
+    end try
+  end tell
+end run
+APPLESCRIPT
+  ); rc=$?
+  [[ $rc -eq 0 && $result == OK ]] || --terminal-send-keys--macos--system-events "$@"
+}
+
+# Last resort: fake keystrokes via System Events (needs Accessibility
+# permission). No `activate` call -- $TERM_PROGRAM isn't always a real app
+# name, so this relies on the calling terminal still being frontmost.
+--terminal-send-keys--macos--system-events() {
+  local result
+  result=$(osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "System Events"
+    try
+      repeat with line_cmd in argv
+        keystroke (line_cmd as text)
+        key code 36 -- Return
+        delay 0.05
+      end repeat
+      return "OK"
+    on error
+      return "NOTFOUND"
+    end try
+  end tell
+end run
+APPLESCRIPT
+  ) || return 1
+  [[ $result == OK ]]
 }
 
 ###############################################################################
@@ -238,35 +501,79 @@ WTCODE_CMDS_TO_TRY=(
     [[ $# -gt 0 ]] || set -- "${SHELL:-bash}"
   fi
 
+  # default to resuming the last session when relaunching claude in a
+  # worktree that already existed; press Esc in the picker to start fresh
+  # instead. only kicks in when no CMD-ARGS were given, so explicit flags
+  # (e.g. `claude --resume`) are never overridden.
+  if [[ $1 == claude && $# -eq 1 && ${WTCODE_WORKTREE_EXISTED:-false} == true ]]; then
+    set -- "$1" /resume
+  fi
+
+  [[ $1 == claude ]] && --provision-claude-settings
+
   --msg "launching: $*"
-  if [[ $(type -t "$1") == function ]]; then
-    "$@"
-  else
-    exec "$@"
-  fi
-}
 
-###############################################################################
-## Command wrappers -- override specific tools with pre-launch setup.
-## Define a function with the tool's name to add custom behavior.
-###############################################################################
+  # when inside tmux, default to send-keys for command history access
+  # set WTCODE_TMUX_MODE=exec to opt out and exec directly
+  if [[ -n ${TMUX:-} ]] && type tmux &>/dev/null; then
+    local mode=$WTCODE_TMUX_MODE
 
-# claude: auto-trust the worktree in Claude Code's config
-claude() {
-  if type jq &>/dev/null && [[ -f ~/.claude.json ]]; then
-    (
-      export worktree_path="$PWD"
-      jq -e '.projects[env.worktree_path]' ~/.claude.json &>/dev/null || {
-        jq '
-          .projects[env.worktree_path] = ({}
-          | .hasTrustDialogAccepted = true
-          )
-        ' ~/.claude.json >~/.claude.json.wtcode.$$
-        mv -f ~/.claude.json.wtcode.$$ ~/.claude.json
-      }
-    )
+    case $mode in
+      send-keys|split-window|new-window)
+        local worktree_path="$PWD"
+        local cmd="cd $(@q "$worktree_path") && $(@q "$@")"
+
+        case $mode in
+          send-keys)
+            # send to current pane
+            tmux send-keys "$cmd" Enter
+            return 0
+            ;;
+          split-window)
+            # create split, send there
+            tmux split-window -v -c "$worktree_path"
+            tmux send-keys "$cmd" Enter
+            return 0
+            ;;
+          new-window)
+            # create window, send there
+            tmux new-window -c "$worktree_path"
+            tmux send-keys "$cmd" Enter
+            return 0
+            ;;
+        esac
+        ;;
+      exec)
+        # explicitly opt out of send-keys, fall through to exec
+        ;;
+      *)
+        --msg "unknown WTCODE_TMUX_MODE: $mode (expected: send-keys, split-window, new-window, exec)"
+        ;;
+    esac
   fi
-  exec claude "$@"
+
+  # outside tmux: reuse the current tab/window if the terminal app supports
+  # it (see --terminal-send-keys). set WTCODE_TERMINAL_MODE=exec to opt out
+  if [[ -z ${TMUX:-} ]]; then
+    local mode=$WTCODE_TERMINAL_MODE
+    case $mode in
+      send-keys)
+        if --terminal-send-keys "$@"; then
+          return 0
+        fi
+        --msg "could not reuse the current tab/window; falling back to exec"
+        ;;
+      exec)
+        # explicitly opt out of send-keys, fall through to exec
+        ;;
+      *)
+        --msg "unknown WTCODE_TERMINAL_MODE: $mode (expected: send-keys, exec)"
+        ;;
+    esac
+  fi
+
+  # outside tmux, WTCODE_TMUX_MODE=exec, unsupported terminal, or unknown mode: exec directly
+  exec "$@"
 }
 
 ###############################################################################

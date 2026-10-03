@@ -43,6 +43,7 @@ wtcode --exec CMD [CMD-ARGS...]
 
 - **`BRANCH`** -- Git branch or worktree name. If omitted and [fzf](https://github.com/junegunn/fzf) is available, interactively select one. Surround with `:` to create a new branch (use `:::name` or `name:::` to avoid fzf matching the colons).
 - **`CMD`** -- Command to launch in the worktree. Defaults to `$WTCODE_CMD`, or the first available of: `claude`, `aider`, `codex`, `$SHELL`.
+  When `CMD` resolves to plain `claude` (no extra args) in a worktree that already existed, wtcode launches `claude /resume` so it opens straight into your last session there. Press `Esc` in the picker to start a new session instead.
 - **`--exec`** -- Skip the branch argument; select interactively via fzf, then launch `CMD`.
 - **`--help`** / **`--version`** -- Show help or version info.
 
@@ -63,6 +64,7 @@ WTCODE_CMD=cursor wtcode feature  # use cursor as default tool
 | Variable | Description |
 |---|---|
 | `WTCODE_CMD` | Default tool to launch (e.g., `claude`, `lazygit`, `vim`, `cursor`) |
+| `WTCODE_USE_CURRENT_BRANCH` | When creating a brand-new branch, fork it from the current HEAD instead of the default: `origin/HEAD` (falling back to `origin/main`, then `origin/master`) |
 | `WTCODE_DEBUG` | Enable debug tracing when set to any value |
 | `GIT_WORKTREE_ROOT` | Override the directory where worktrees are created |
 
@@ -70,13 +72,14 @@ WTCODE_CMD=cursor wtcode feature  # use cursor as default tool
 
 1. **Select/specify a branch** -- pass as argument or pick interactively with fzf
 2. **Create or switch to the worktree** -- worktrees are organized under `$GIT_WORKTREE_ROOT` (defaults to `../<repo>.worktrees/`)
-3. **Launch a tool** -- runs the specified command (or smart default) inside the worktree
+3. **Provision Claude Code, if that's what you're launching** -- when the resolved tool is `claude`, the worktree is auto-trusted (skips the "do you trust this folder" dialog) and `.claude/settings.json` / `.claude/settings.local.json` are symlinked in from the main repo if not already present -- never for other tools, never clobbering a file that's already there
+4. **Launch the tool** -- runs the specified command (or smart default) inside the worktree
 
 ## Dependencies
 
 - **git** -- required
 - **[fzf](https://github.com/junegunn/fzf)** -- recommended, for interactive branch selection
-- **[jq](https://jqlang.github.io/jq/)** -- optional, for Claude Code auto-trust setup
+- **[jq](https://jqlang.github.io/jq/)** -- optional, for Claude Code auto-trust setup (no dependency needed for the settings symlinking itself)
 
 ## License
 
