@@ -214,6 +214,18 @@ test_existing_branch_not_checked_out_anywhere() {
   assert_eq "dormant" "$(git -C "$GIT_WORKTREE_ROOT/dormant" branch --show-current)"
 }
 
+test_slash_in_new_branch_name() {
+  local dir=$1
+  local out
+  out=$("$WTCODE" :fix/foo pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/fix/foo" "$out" "slash should nest the worktree dir" || return 1
+  assert_eq "fix/foo" "$(git -C "$GIT_WORKTREE_ROOT/fix/foo" branch --show-current)" \
+    "slash should be preserved in branch name" || return 1
+  out=$("$WTCODE" ":Security/Bar Something//blah" pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/security/bar-something/blah" "$out" \
+    "free-form text around slashes should be sanitized"
+}
+
 ###############################################################################
 # tests for .claude/settings.json symlinking (provisioning only for claude)
 ###############################################################################
@@ -407,6 +419,7 @@ ALL_TESTS=(
   test_after_suffix_resolves_via_precheck
   test_new_branch_default
   test_existing_branch_not_checked_out_anywhere
+  test_slash_in_new_branch_name
   test_provisions_claude_settings_symlinks
   test_provisions_claude_settings_skips_existing_file
   test_provisions_claude_gitignore_when_needed

@@ -41,10 +41,12 @@ ${WTCODE_DEBUG:+set -x}
     tr '[:upper:]' '[:lower:]' |   # lowercase
     sed 's/[^a-z0-9/_-]/-/g' |     # replace non-alnum to hyphens
     sed 's/--*/-/g' |              # collapse consecutive hyphens
-    sed 's/^-//; s/-$//'           # trim leading/trailing hyphens
+    sed 's|//*|/|g' |              # collapse consecutive slashes
+    sed 's|-*/-*|/|g' |            # no hyphens adjacent to slashes
+    sed 's|^[-/]*||; s|[-/]*$||'   # trim leading/trailing hyphens/slashes
 }
 
-WTCODE_VERSION=0.5.0
+WTCODE_VERSION=0.6.0
 --version() { echo "wtcode $WTCODE_VERSION"; }
 --help() {
   cat <<USAGE
