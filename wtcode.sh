@@ -416,21 +416,20 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
 
 # --fzf-header DIR [force-base]
 # showing ^r only matters when a *new* branch is about to be made: scope none,
-# or nothing matches (fzf tells us via $FZF_MATCH_COUNT); ^r itself reveals it
+# or nothing matches (fzf tells us via $FZF_MATCH_COUNT); ^r itself reveals it.
+# the current values are bold (fzf --ansi styles headers too)
 --fzf-header() {
-  local dir=$1 scope tool key=
+  local dir=$1 scope order tool b=$'\e[1m' r=$'\e[0m'
   scope=$(<"$dir/scope")
-  # (bold magenta so what will launch stands out; fzf --ansi colors headers too)
-  local on=$'\e[1;35m' off=$'\e[0m'
-  if [[ -r $dir/tool_fixed ]]; then tool="${on}tool: $(<"$dir/tool_fixed") (given)${off}"; else tool="${on}^t tool: $(<"$dir/tool")${off}"; fi
+  case $(<"$dir/order") in full) order=remote/name ;; *) order=$(<"$dir/order") ;; esac
+  if [[ -r $dir/tool_fixed ]]; then tool="tool: $b$(<"$dir/tool_fixed")$r (given)"; else tool="^t tool: $b$(<"$dir/tool")$r"; fi
   if [[ $scope == none || ${2-} == force-base || ${FZF_MATCH_COUNT-} == 0 ]]; then
-    echo "$tool   ^r new branch from: $(<"$dir/base_label")"
+    echo "$tool   ^r new branch from: $b$(<"$dir/base_label")$r"
   else
     echo 'Select a worktree/branch, or type a new name to create one (:name: avoids matching existing ones).'
     echo "$tool"
   fi
-  local order; case $(<"$dir/order") in full) order=remote/name ;; *) order=$(<"$dir/order") ;; esac
-  echo "^s scope: $scope   ^o order: $order   ^u update remotes"
+  echo "^s scope: $b$scope$r   ^o order: $b$order$r   ^u update remotes"
 }
 
 # --list-branches [SCOPE] [ORDER] -- candidates for the picker

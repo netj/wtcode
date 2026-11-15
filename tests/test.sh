@@ -243,6 +243,7 @@ test_slash_in_new_branch_name() {
   git fetch -q origin
 }
 
+--header() { "$WTCODE" --fzf-header "$1" | sed $'s/\x1b\\[[0-9;]*m//g'; }   # without bold escapes
 --names() { "$WTCODE" --list-branches "$@" | cut -f1 | tr '\n' ' '; }
 
 test_list_scopes() {
@@ -277,14 +278,14 @@ test_base_labels_and_header() {
   assert_eq "side/x (default)" "$(WTCODE_BASE_REF=side/x "$WTCODE" --base-label default)" "explicit base" || return 1
   d=$("$WTCODE" --fzf-init)
   # ^r only shows up when making a new branch: scope none, or nothing matches
-  assert_contains "$("$WTCODE" --fzf-header "$d")" "Select a worktree/branch" "select hint when browsing" || return 1
-  [[ $("$WTCODE" --fzf-header "$d") != *"^r"* ]] || { echo "  ^r shown while browsing" >&2; return 1; }
-  assert_contains "$(FZF_MATCH_COUNT=0 "$WTCODE" --fzf-header "$d")" "^r new branch from: origin/main (default)" "^r when nothing matches" || return 1
+  assert_contains "$(--header "$d")" "Select a worktree/branch" "select hint when browsing" || return 1
+  [[ $(--header "$d") != *"^r"* ]] || { echo "  ^r shown while browsing" >&2; return 1; }
+  assert_contains "$(FZF_MATCH_COUNT=0 --header "$d")" "^r new branch from: origin/main (default)" "^r when nothing matches" || return 1
   echo none > "$d/scope"
-  assert_contains "$("$WTCODE" --fzf-header "$d")" "^r new branch from: origin/main (default)" "^r for scope none" || return 1
-  [[ $("$WTCODE" --fzf-header "$d") != *"Select a worktree"* ]] || { echo "  select hint shown for scope none" >&2; return 1; }
+  assert_contains "$(--header "$d")" "^r new branch from: origin/main (default)" "^r for scope none" || return 1
+  [[ $(--header "$d") != *"Select a worktree"* ]] || { echo "  select hint shown for scope none" >&2; return 1; }
   "$WTCODE" --fzf-cycle "$d" base
-  assert_contains "$("$WTCODE" --fzf-header "$d")" "^r new branch from: main (current)" "label follows ^r"
+  assert_contains "$(--header "$d")" "^r new branch from: main (current)" "label follows ^r"
 }
 
 test_fzf_cycle_and_state() {
