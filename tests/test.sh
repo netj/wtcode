@@ -278,16 +278,16 @@ test_base_labels_and_header() {
   assert_eq "side/x (default)" "$(WTCODE_BASE_REF=side/x "$WTCODE" --base-label default)" "explicit base" || return 1
   d=$("$WTCODE" --fzf-init)
   # ^r only shows up when making a new branch: scope none, or nothing matches
-  assert_contains "$(--header "$d")" "Select a worktree/branch" "select hint when browsing" || return 1
+  assert_contains "$(--header "$d")" "alt-enter creates a new one" "select hint when browsing" || return 1
   [[ $(--header "$d") != *"^r"* ]] || { echo "  ^r shown while browsing" >&2; return 1; }
   assert_contains "$(FZF_MATCH_COUNT=0 --header "$d")" "^r from: origin/main (default)" "^r when nothing matches" || return 1
   : > "$d/updating"   # ^l pressed: only that spot changes, the rest of the header stays
   assert_contains "$(--header "$d")" "^l updating remotes..." "inline update indicator" || return 1
   assert_contains "$(--header "$d")" "^s scope: all" "rest of the header stays while updating" || return 1
   rm "$d/updating"
-  "$WTCODE" --fzf-cycle "$d" new   # ^n
+  "$WTCODE" --fzf-cycle "$d" new   # tab
   assert_contains "$(--header "$d")" "^r from: origin/main (default)" "^r in new-branch mode" || return 1
-  [[ $(--header "$d") != *"Select a worktree"* ]] || { echo "  select hint shown in new-branch mode" >&2; return 1; }
+  [[ $(--header "$d") != *"alt-enter creates"* ]] || { echo "  select hint shown in new-branch mode" >&2; return 1; }
   "$WTCODE" --fzf-cycle "$d" base
   assert_contains "$(--header "$d")" "^r from: main (current)" "label follows ^r"
 }
@@ -334,7 +334,7 @@ test_tmux_version_gate() {
   done
 }
 
-# a stand-in for fzf: drains the list, optionally flips ^n like the key would,
+# a stand-in for fzf: drains the list, optionally flips new-branch mode like the key would,
 # then prints what fzf --print-query would: the query, then the selection
 --fake-fzf() {
   local bin=$1/bin; mkdir -p "$bin"
@@ -354,13 +354,13 @@ test_new_branch_mode_ignores_selection() {
   git branch zeta
   --fake-fzf "$dir"
   out=$(PATH="$dir/bin:$PATH" STUB_NEW=1 STUB_QUERY=fresh STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
-  assert_eq "$GIT_WORKTREE_ROOT/fresh" "$out" "^n: Enter creates the typed name even with a highlighted match" || return 1
+  assert_eq "$GIT_WORKTREE_ROOT/fresh" "$out" "new-branch mode: Enter creates the typed name even with a highlighted match" || return 1
   assert_eq "fresh" "$(git -C "$GIT_WORKTREE_ROOT/fresh" branch --show-current)" || return 1
-  # a typed name matching an existing branch is still created fresh in ^n mode
+  # a typed name matching an existing branch is still created fresh in new-branch mode
   out=$(PATH="$dir/bin:$PATH" STUB_NEW=1 STUB_QUERY=zeta-2 STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
-  assert_eq "$GIT_WORKTREE_ROOT/zeta-2" "$out" "^n: new name" || return 1
+  assert_eq "$GIT_WORKTREE_ROOT/zeta-2" "$out" "new-branch mode: new name" || return 1
   out=$(PATH="$dir/bin:$PATH" STUB_QUERY=zet STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
-  assert_eq "$GIT_WORKTREE_ROOT/zeta" "$out" "without ^n the selection wins over the query"
+  assert_eq "$GIT_WORKTREE_ROOT/zeta" "$out" "without new-branch mode the selection wins over the query"
 }
 
 test_state_untouched_by_noninteractive_runs() {
