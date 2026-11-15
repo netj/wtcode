@@ -269,6 +269,26 @@ test_list_orders() {
   assert_contains "$shown" "alpha (origin)" "name (remote) suffix"
 }
 
+test_drifted_worktree_dir_shown_and_searchable() {
+  local dir=$1 plain='s/\x1b\[[0-9;]*m//g' out
+  git worktree add -q "$GIT_WORKTREE_ROOT/old-dir" -b feat
+  git worktree add -q "$GIT_WORKTREE_ROOT/same" -b same
+  git branch plain
+  out=$("$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$out" "feat" "branch" || return 1
+  assert_contains "$(grep '^[+ *] feat' <<< "$out")" "@ old-dir" "worktree dir shown on the same row (all)" || return 1
+  [[ $(grep '^[+ *] same' <<< "$out") != *"@"* ]] || { echo "  dir shown although equal to the branch name" >&2; return 1; }
+  [[ $(grep '^[+ *] plain' <<< "$out") != *"@"* ]] || { echo "  dir shown for a branch without a worktree" >&2; return 1; }
+  out=$("$WTCODE" --list-branches worktree recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$out" "@ old-dir" "worktree scope shows it too" || return 1
+  out=$("$WTCODE" --list-branches local recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  [[ $out != *"@ old-dir"* ]] || { echo "  dir shown in the local (branches only) scope" >&2; return 1; }
+  # worktrees outside wtcode's root (e.g. the main checkout) aren't "drifted": nothing shown
+  [[ $(grep '^[+ *] main' <<< "$("$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')") != *"@"* ]] || { echo "  dir shown for the main checkout" >&2; return 1; }
+  # selecting still returns the branch name, whatever matched
+  assert_eq "feat" "$("$WTCODE" --list-branches all recent | grep -a 'feat' | head -1 | cut -f1)" "row id stays the branch"
+}
+
 test_base_labels_and_header() {
   local dir=$1 d
   --picker-repo "$dir"; git remote set-head origin main >/dev/null
@@ -590,6 +610,7 @@ ALL_TESTS=(
   test_slash_in_new_branch_name
   test_list_scopes
   test_list_orders
+  test_drifted_worktree_dir_shown_and_searchable
   test_base_labels_and_header
   test_fzf_cycle_and_state
   test_history_and_tool_picker_state

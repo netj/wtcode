@@ -75,7 +75,8 @@ Usage: wtcode [--base REF] [BRANCH] [CMD [CMD-ARGS...]]
   --base REF Fork a brand-new branch from REF (same as \$WTCODE_BASE_REF).
 
 Interactive picker keys (when BRANCH is omitted):
-  ctrl-s     scope: all, worktree, local, remote
+  ctrl-s     scope: all, worktree, local, remote (all and worktree also show and
+             match a worktree directory that drifted from its branch name)
   ctrl-o     order: recent, name (remote shown as a suffix), remote/name
   ctrl-r     base for a new branch: the default, or the current branch
   ctrl-t     tool: nested picker of installed tools and recent commands;
@@ -458,6 +459,11 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   local c_reset=$'\e[0m' c_green=$'\e[32m' c_cyan=$'\e[36m' c_blue=$'\e[34m' c_yellow=$'\e[33m' c_dim=$'\e[2m'
   local c_red=$'\e[31m' local_branches sort_args
   local_branches=$(git branch --format='%(refname:lstrip=2)')
+  # where wtcode puts worktrees (see --enter-git-worktree)
+  local wt_root=${GIT_WORKTREE_ROOT:-}
+  if [[ -z $wt_root ]]; then
+    wt_root=$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && echo "$(pwd -P).worktrees") || wt_root=
+  fi
   case $order in
     name) sort_args=(-k3,3f -k1,1n) ;;   # by name alone; local before remote on ties
     full) sort_args=(-k4,4f) ;;          # by remote/name
@@ -499,6 +505,14 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       ind=' '; c=$c_reset
       if [[ $order == name ]]; then nm=${branch#*/} suf=" (${branch%%/*})"; else pre=${branch%%/*}/ nm=${branch#*/}; fi
     else ind=' '; c=$c_reset
+    fi
+    # a worktree that has drifted from its branch name (wtcode puts the worktree
+    # for branch X at <root>/X) also shows its directory, which is then
+    # searchable too. local/remote scopes are about branches only
+    if [[ -n $worktree && -n $wt_root && $worktree == "$wt_root"/* && ( $scope == all || $scope == worktree ) ]]; then
+      local rel=${worktree#"$wt_root"/}
+      (( ${#rel} > 28 )) && rel="..${rel: -26}"
+      [[ $rel == "$branch" ]] || suf=" @ $rel"
     fi
     # truncate the name to fit, then pad (before adding colors)
     local room=$(( 50 - ${#pre} - ${#suf} )) padw
