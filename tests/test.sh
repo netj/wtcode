@@ -397,6 +397,60 @@ test_picked_tool_is_remembered_even_if_main_picker_is_canceled() {
   assert_eq "pwd -P" "$("$WTCODE" --fzf-init | { read -r x; <"$x/tool" cat; })" "next picker starts on it"
 }
 
+test_split_command() {
+  local dir=$1 got
+  source <(sed -n '/^--split-command()/,/^}/p' "$WTCODE")
+  got=$(--split-command "claude --append-system-prompt \"it's fine\" a\\ b 'x  y' \"\"" | tr '\0' '|')
+  assert_eq "claude|--append-system-prompt|it's fine|a b|x  y||" "$got" "quotes, escapes, empty arg" || return 1
+  assert_eq "" "$(--split-command "   " | tr '\0' '|')" "blank gives no words" || return 1
+  assert_eq "-n|foo|" "$(--split-command "-n foo" | tr '\0' '|')" "leading dash words"
+}
+
+test_blank_tool_falls_back_to_default() {
+  local dir=$1 bin out
+  bin=$(--fake-claude-bin)
+  out=$(PATH="$bin:$PATH" WTCODE_PICKED_TOOL=" " "$WTCODE" :blanktool 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/blanktool" "$out" "a whitespace-only picked tool must not break the launch"
+}
+
+test_echo_hostile_tool_text_is_kept_verbatim() {
+  local dir=$1
+  export WTCODE_STATE_FILE=$dir/state
+  "$WTCODE" --history-add "-n foo"; "$WTCODE" --state-save "tool=-e"
+  assert_eq "-n foo" "$(head -1 "$dir/state.cmds")" "history keeps echo-looking text" || return 1
+  assert_contains "$(cat "$dir/state")" "tool=-e" "state keeps it too"
+}
+
+test_base_flag_is_not_exported_to_the_tool() {
+  local dir=$1
+  git branch side
+  assert_eq "unset" "$("$WTCODE" --base side :noleak sh -c 'echo ${WTCODE_BASE_REF-unset}' 2>/dev/null | tail -1)" \
+    "the picker's callbacks get the base explicitly; a launched tool must not inherit it"
+}
+
+test_explicit_sha_base_is_labeled_as_given() {
+  local dir=$1 sha
+  sha=$(git rev-parse HEAD)
+  assert_eq "$sha (default)" "$(WTCODE_BASE_REF=$sha "$WTCODE" --base-label default)" "an explicit sha is not mistaken for the HEAD fallback"
+}
+
+test_cycling_scope_clears_the_updating_marker() {
+  local dir=$1 d
+  d=$("$WTCODE" --fzf-init); : > "$d/updating"
+  "$WTCODE" --fzf-cycle "$d" base;  [[ -e $d/updating ]] || { echo "  ^r cleared it" >&2; return 1; }
+  "$WTCODE" --fzf-cycle "$d" scope; [[ ! -e $d/updating ]] || { echo "  scope reload left the marker" >&2; return 1; }
+}
+
+test_worktree_root_is_compared_canonically() {
+  local dir=$1 out
+  git worktree add -q "$GIT_WORKTREE_ROOT/feat" -b feat
+  ln -s "$GIT_WORKTREE_ROOT" "$dir/lnk"
+  for root in "$GIT_WORKTREE_ROOT/" "$dir/lnk"; do
+    out=$(GIT_WORKTREE_ROOT=$root "$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g' | grep '^[+ *] feat')
+    [[ $out != *"@"* ]] || { echo "  root '$root' not recognized: $out" >&2; return 1; }
+  done
+}
+
 test_state_untouched_by_noninteractive_runs() {
   local dir=$1
   export WTCODE_STATE_FILE=$dir/state
@@ -620,6 +674,13 @@ ALL_TESTS=(
   test_tmux_version_gate
   test_alt_enter_creates_typed_name
   test_picked_tool_is_remembered_even_if_main_picker_is_canceled
+  test_split_command
+  test_blank_tool_falls_back_to_default
+  test_echo_hostile_tool_text_is_kept_verbatim
+  test_base_flag_is_not_exported_to_the_tool
+  test_explicit_sha_base_is_labeled_as_given
+  test_cycling_scope_clears_the_updating_marker
+  test_worktree_root_is_compared_canonically
   test_state_untouched_by_noninteractive_runs
   test_base_ref_env_and_flag
   test_provisions_claude_settings_symlinks

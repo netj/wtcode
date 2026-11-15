@@ -22,7 +22,7 @@ shopt -s extglob
 : ${WTCODE_USE_CURRENT_BRANCH:=false}
 : ${WTCODE_BASE_REF:=}          # ref to fork new branches from (also: --base REF)
 : ${WTCODE_BRANCH_SCOPE:=}      # initial picker scope: all|worktree|local|remote
-: ${WTCODE_BRANCH_ORDER:=}      # initial picker order: recent|name|type
+: ${WTCODE_BRANCH_ORDER:=}      # initial picker order: recent|name|full
 # where the picker remembers its last state; set to empty to disable
 : ${WTCODE_STATE_FILE=${XDG_STATE_HOME:-$HOME/.local/state}/wtcode/state}
 if --running-under-coding-agent; then
@@ -33,7 +33,6 @@ else
   : ${WTCODE_TERMINAL_MODE:=send-keys}
 fi
 : ${WTCODE_DEBUG:=}
-export WTCODE_BASE_REF WTCODE_USE_CURRENT_BRANCH   # key-binding callbacks run as child processes
 
 ${WTCODE_DEBUG:+set -x}
 
@@ -79,7 +78,8 @@ Interactive picker keys (when BRANCH is omitted):
              match a worktree directory that drifted from its branch name
              or sits outside the main checkout and worktrees root)
   ctrl-o     order: recent, name (remote shown as a suffix), remote/name
-  ctrl-r     base for a new branch: the default, or the current branch
+  ctrl-r     base for a new branch: the default, the current branch (or
+             origin/HEAD, when that differs from the default)
   ctrl-t     tool: nested picker of installed tools and recent commands;
              type a new command/args to launch it (unless CMD was given)
   alt-enter  create a new branch named after what you typed (never the
@@ -201,7 +201,7 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     { [[ -r $WTCODE_STATE_FILE ]] && cat "$WTCODE_STATE_FILE"; true; } > "$tmp"
     for kv; do
       grep -v "^${kv%%=*}=" "$tmp" > "$tmp.2" || true
-      echo "$kv" >> "$tmp.2"
+      printf '%s\n' "$kv" >> "$tmp.2"
       mv "$tmp.2" "$tmp"
     done
     mv "$tmp" "$WTCODE_STATE_FILE"
@@ -251,12 +251,37 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     origin)  echo "$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null || echo origin/HEAD) (origin/HEAD)" ;;
     *)
       ref=$(--default-base-ref)
-      if [[ $ref =~ ^[0-9a-f]{40}$ ]]; then name=$(git branch --show-current 2>/dev/null); name=${name:-HEAD}
+      if [[ -z $WTCODE_BASE_REF && $ref =~ ^[0-9a-f]{40}$ ]]; then name=$(git branch --show-current 2>/dev/null); name=${name:-HEAD}   # (the fallback to HEAD)
       elif [[ $ref == origin/HEAD ]]; then name=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null || echo "$ref")
       else name=$ref
       fi
       echo "$name (default)" ;;
   esac
+}
+
+# --split-command STRING -- shell-like words (quotes and backslashes), NUL-separated
+--split-command() {
+  local s=$1 i=0 c q= word= started=false
+  while (( i < ${#s} )); do
+    c=${s:i:1}
+    if [[ $q == "'" ]]; then
+      if [[ $c == "'" ]]; then q=; else word+=$c; fi
+    elif [[ $q == '"' ]]; then
+      if [[ $c == '"' ]]; then q=
+      elif [[ $c == '\' && ${s:i+1:1} == ['"\$`'] ]]; then word+=${s:i+1:1}; i=$((i+1))
+      else word+=$c
+      fi
+    else
+      case $c in
+        "'"|'"') q=$c; started=true ;;
+        '\')     word+=${s:i+1:1}; i=$((i+1)); started=true ;;
+        [[:space:]]) if $started; then printf '%s\0' "$word"; word=; started=false; fi ;;
+        *)       word+=$c; started=true ;;
+      esac
+    fi
+    i=$((i+1))
+  done
+  if $started; then printf '%s\0' "$word"; fi
 }
 
 # --available-tools -- installed tools worth offering, one per line
@@ -293,7 +318,7 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     # else the first installed tool
     v=${WTCODE_CMD:-$(--state-get tool)}
     [[ -n $WTCODE_CMD ]] || type "${v%% *}" &>/dev/null || v=$(--available-tools | head -1)
-    echo "$v" > "$dir/tool"
+    printf '%s\n' "$v" > "$dir/tool"
   fi
   echo "$dir"
 }
@@ -303,7 +328,7 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
 --fzf-commit() {
   local dir=$1 base tool
   base=$(<"$dir/base")
-  [[ $base == default ]] || WTCODE_BASE_REF=$(--base-ref-for "$base")
+  [[ $base == default ]] || WTCODE_PICKED_BASE=$(--base-ref-for "$base")   # (not WTCODE_BASE_REF: that may be exported to the tool)
   if [[ -r $dir/tool ]]; then
     tool=$(<"$dir/tool")
     WTCODE_PICKED_TOOL=$tool
@@ -321,6 +346,8 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
   esac
   --next-in-cycle "$(<"$dir/$kind")" "${choices[@]}" > "$dir/$kind.new"
   mv "$dir/$kind.new" "$dir/$kind"
+  # a scope/order reload cancels an update in flight, so its marker must go
+  [[ $kind == base ]] || rm -f "$dir/updating"
   --state-save "$kind=$(<"$dir/$kind")"   # remembered right away, even if the picker is canceled
   [[ $kind == base ]] && --base-label "$(<"$dir/base")" > "$dir/base_label"
   return 0
@@ -330,7 +357,7 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
 --history-file() { [[ -n $WTCODE_STATE_FILE ]] && echo "$WTCODE_STATE_FILE.cmds" || true; }
 --history-add() {
   local f; f=$(--history-file); [[ -n $f && -n $1 ]] || return 0
-  { { echo "$1"; grep -vxF -- "$1" "$f" 2>/dev/null || true; } | head -20 > "$f.new" && mv "$f.new" "$f"; } 2>/dev/null || true
+  { { printf '%s\n' "$1"; grep -vxF -- "$1" "$f" 2>/dev/null || true; } | head -20 > "$f.new" && mv "$f.new" "$f"; } 2>/dev/null || true
 }
 
 # --fzf-pick-tool DIR -- nested picker for the tool (run via ctrl-t)
@@ -350,8 +377,9 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   # fzf prints just the query when nothing matches, else query, key, choice
   { read -r query || true; read -r key || true; read -r choice || true; } <<< "$out"
   if [[ $key == alt-enter || -z $choice ]]; then choice=$query; fi
+  choice=${choice#"${choice%%[![:space:]]*}"} choice=${choice%"${choice##*[![:space:]]}"}   # trim
   if [[ -n $choice ]]; then
-    echo "$choice" > "$dir/tool"
+    printf '%s\n' "$choice" > "$dir/tool"
     # remembered right away: it's a deliberate choice that should survive
     # canceling the main picker
     --state-save tool="$choice"
@@ -383,6 +411,8 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     printf -v cmd ': > %q; %q %q --fzf-run %q > %q' "$dir/started" "$BASH" "$self" "$dir" "$dir/out"
     : > "$dir/in_popup"
     # a popup doesn't inherit our environment; pass along what matters
+    # (not exported, but the key-binding callbacks need them)
+    envs+=(-e "WTCODE_BASE_REF=$WTCODE_BASE_REF" -e "WTCODE_USE_CURRENT_BRANCH=$WTCODE_USE_CURRENT_BRANCH")
     for v in $(compgen -e); do
       [[ $v =~ ^(PATH|HOME|SHELL|USER|LOGNAME|TMPDIR|LANG|LC_[A-Z]+|XDG_[A-Z_]+|WTCODE_[A-Z_]+|GIT_[A-Z_]+|FZF_[A-Z_]+)$ ]] &&
         envs+=(-e "$v=${!v}")
@@ -412,11 +442,12 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     opts+=(--bind "ctrl-t:execute($b --fzf-pick-tool $dir_q)+transform-header($b --fzf-header $dir_q)")
   fi
   --list-branches "$(<"$dir/scope")" "$(<"$dir/order")" |
+  WTCODE_BASE_REF=$WTCODE_BASE_REF WTCODE_USE_CURRENT_BRANCH=$WTCODE_USE_CURRENT_BRANCH \
   fzf --ansi --color --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
       --preview 'echo {3}' --preview-window 'down:2:wrap' \
       --header "$(--fzf-header "$dir")" \
-      --bind "ctrl-s:execute-silent($b --fzf-cycle $dir_q scope)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
-      --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
+      --bind "ctrl-s:execute-silent($b --fzf-cycle $dir_q scope)+reload($b --fzf-list $dir_q)" \
+      --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)" \
       --bind "ctrl-r:execute-silent($b --fzf-cycle $dir_q base)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-l:execute-silent(: > $dir_q/updating)+transform-header($b --fzf-header $dir_q)+reload($b --fzf-update $dir_q)" \
       --bind "alt-enter:execute-silent(: > $dir_q/force_new)+accept" \
@@ -465,6 +496,8 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   local main_wt wt_root=${GIT_WORKTREE_ROOT:-}
   main_wt=$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && pwd -P) || main_wt=
   [[ -z $wt_root && -z $main_wt ]] || : ${wt_root:=$main_wt.worktrees}
+  # compare like with like: git reports canonical paths (no symlinks, no trailing /)
+  [[ ! -d $wt_root ]] || wt_root=$(cd "$wt_root" && pwd -P)
   case $order in
     name) sort_args=(-k3,3f -k1,1n) ;;   # by name alone; local before remote on ties
     full) sort_args=(-k4,4f) ;;          # by remote/name
@@ -665,7 +698,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     # set WTCODE_USE_CURRENT_BRANCH=true to always fork from the current
     # branch instead
     local base_ref
-    base_ref=$(--default-base-ref)
+    base_ref=${WTCODE_PICKED_BASE:-$(--default-base-ref)}
     --msg "creating worktree with new branch: $branch_name (from $base_ref)"
     git worktree add -b "$branch_name" "$worktree_path" "$base_ref"
   fi
@@ -861,11 +894,10 @@ APPLESCRIPT
   if [[ $# -eq 0 && -n ${WTCODE_PICKED_TOOL-} ]]; then
     # chosen in the interactive picker; may carry args, e.g. `claude --resume`
     local _w _words=()
-    while IFS= read -r -d '' _w; do _words+=("$_w"); done < <(
-      printf '%s' "$WTCODE_PICKED_TOOL" | xargs printf '%s\0' 2>/dev/null ||
-      printf '%s\0' $WTCODE_PICKED_TOOL)
-    set -- "${_words[@]}"
-  elif [[ $# -eq 0 ]]; then
+    while IFS= read -r -d '' _w; do _words+=("$_w"); done < <(--split-command "$WTCODE_PICKED_TOOL")
+    [[ ${#_words[@]} -eq 0 ]] || set -- "${_words[@]}"
+  fi
+  if [[ $# -eq 0 ]]; then
     for _cmd in "${WTCODE_CMDS_TO_TRY[@]}"; do
       [[ -n "$_cmd" ]] && type "$_cmd" &>/dev/null && set -- "$_cmd" && break
     done
