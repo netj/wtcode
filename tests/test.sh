@@ -5,6 +5,7 @@
 set -uo pipefail
 
 WTCODE=$(cd "$(dirname "$0")/.." && pwd)/wtcode.sh
+export WTCODE   # (the fake fzf stub calls back into it)
 unset WTCODE_DEBUG WTCODE_CMD GIT_WORKTREE_ROOT 2>/dev/null || true
 # tests must never send-keys into whatever pane/tab/window happens to be
 # "current" -- force the exec-directly path regardless of the environment
@@ -250,7 +251,6 @@ test_list_scopes() {
   local dir=$1
   --picker-repo "$dir"
   assert_eq "main wt1 zeta origin/alpha " "$(--names all)" "all" || return 1
-  assert_eq "" "$(--names none)" "none" || return 1
   assert_eq "main wt1 " "$(--names worktree)" "worktree" || return 1
   assert_eq "main wt1 zeta " "$(--names local)" "local" || return 1
   assert_eq "origin/alpha " "$(--names remote)" "remote"
@@ -280,12 +280,12 @@ test_base_labels_and_header() {
   # ^r only shows up when making a new branch: scope none, or nothing matches
   assert_contains "$(--header "$d")" "Select a worktree/branch" "select hint when browsing" || return 1
   [[ $(--header "$d") != *"^r"* ]] || { echo "  ^r shown while browsing" >&2; return 1; }
-  assert_contains "$(FZF_MATCH_COUNT=0 --header "$d")" "^r new branch from: origin/main (default)" "^r when nothing matches" || return 1
-  echo none > "$d/scope"
-  assert_contains "$(--header "$d")" "^r new branch from: origin/main (default)" "^r for scope none" || return 1
-  [[ $(--header "$d") != *"Select a worktree"* ]] || { echo "  select hint shown for scope none" >&2; return 1; }
+  assert_contains "$(FZF_MATCH_COUNT=0 --header "$d")" "^r from: origin/main (default)" "^r when nothing matches" || return 1
+  "$WTCODE" --fzf-cycle "$d" new   # ^n
+  assert_contains "$(--header "$d")" "^r from: origin/main (default)" "^r in new-branch mode" || return 1
+  [[ $(--header "$d") != *"Select a worktree"* ]] || { echo "  select hint shown in new-branch mode" >&2; return 1; }
   "$WTCODE" --fzf-cycle "$d" base
-  assert_contains "$(--header "$d")" "^r new branch from: main (current)" "label follows ^r"
+  assert_contains "$(--header "$d")" "^r from: main (current)" "label follows ^r"
 }
 
 test_fzf_cycle_and_state() {
@@ -295,7 +295,7 @@ test_fzf_cycle_and_state() {
   d=$("$WTCODE" --fzf-init)
   assert_eq "all recent default" "$(cat "$d/scope" "$d/order" "$d/base" | tr '\n' ' ' | sed 's/ $//')" "defaults" || return 1
   "$WTCODE" --fzf-cycle "$d" scope; "$WTCODE" --fzf-cycle "$d" scope
-  assert_eq "worktree" "$(<"$d/scope")" "scope cycles all->none->worktree" || return 1
+  assert_eq "local" "$(<"$d/scope")" "scope cycles all->worktree->local" || return 1
   "$WTCODE" --fzf-cycle "$d" base
   assert_eq "current" "$(<"$d/base")" "base cycles default->current" || return 1
   "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order
@@ -328,6 +328,35 @@ test_tmux_version_gate() {
     ( PATH="$dir/bin:$PATH"; source <(sed -n '/^--tmux-at-least()/,/^}/p' "$WTCODE"); --tmux-at-least 3 3 ) || got=1
     assert_eq "${v#*:}" "$got" "tmux ${v%:*} supports popup env (-e)" || return 1
   done
+}
+
+# a stand-in for fzf: drains the list, optionally flips ^n like the key would,
+# then prints what fzf --print-query would: the query, then the selection
+--fake-fzf() {
+  local bin=$1/bin; mkdir -p "$bin"
+  cat > "$bin/fzf" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+dir=$(printf '%s\n' "$@" | grep -o -m1 'fzf-cycle [^ ]*' | head -1 | cut -d' ' -f2)
+[[ -z ${STUB_NEW-} ]] || "$WTCODE" --fzf-cycle "$dir" new
+printf '%s\n' "$STUB_QUERY"
+[[ -z ${STUB_PICK-} ]] || printf '%s\tx\ty\n' "$STUB_PICK"
+STUB
+  chmod +x "$bin/fzf"
+}
+
+test_new_branch_mode_ignores_selection() {
+  local dir=$1 out
+  git branch zeta
+  --fake-fzf "$dir"
+  out=$(PATH="$dir/bin:$PATH" STUB_NEW=1 STUB_QUERY=fresh STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/fresh" "$out" "^n: Enter creates the typed name even with a highlighted match" || return 1
+  assert_eq "fresh" "$(git -C "$GIT_WORKTREE_ROOT/fresh" branch --show-current)" || return 1
+  # a typed name matching an existing branch is still created fresh in ^n mode
+  out=$(PATH="$dir/bin:$PATH" STUB_NEW=1 STUB_QUERY=zeta-2 STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/zeta-2" "$out" "^n: new name" || return 1
+  out=$(PATH="$dir/bin:$PATH" STUB_QUERY=zet STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/zeta" "$out" "without ^n the selection wins over the query"
 }
 
 test_state_untouched_by_noninteractive_runs() {
@@ -550,6 +579,7 @@ ALL_TESTS=(
   test_fzf_cycle_and_state
   test_history_and_tool_picker_state
   test_tmux_version_gate
+  test_new_branch_mode_ignores_selection
   test_state_untouched_by_noninteractive_runs
   test_base_ref_env_and_flag
   test_provisions_claude_settings_symlinks

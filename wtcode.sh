@@ -21,7 +21,7 @@ shopt -s extglob
 : ${WTCODE_CMD:=}
 : ${WTCODE_USE_CURRENT_BRANCH:=false}
 : ${WTCODE_BASE_REF:=}          # ref to fork new branches from (also: --base REF)
-: ${WTCODE_BRANCH_SCOPE:=}      # initial picker scope: all|none|worktree|local|remote
+: ${WTCODE_BRANCH_SCOPE:=}      # initial picker scope: all|worktree|local|remote
 : ${WTCODE_BRANCH_ORDER:=}      # initial picker order: recent|name|type
 # where the picker remembers its last state; set to empty to disable
 : ${WTCODE_STATE_FILE=${XDG_STATE_HOME:-$HOME/.local/state}/wtcode/state}
@@ -75,13 +75,15 @@ Usage: wtcode [--base REF] [BRANCH] [CMD [CMD-ARGS...]]
   --base REF Fork a brand-new branch from REF (same as \$WTCODE_BASE_REF).
 
 Interactive picker keys (when BRANCH is omitted):
-  ctrl-s     scope: all, none (new branch only), worktree, local, remote
+  ctrl-s     scope: all, worktree, local, remote
   ctrl-o     order: recent, name (remote shown as a suffix), remote/name
   ctrl-r     base for a new branch: the default, or the current branch
-             (shown when making a new branch: scope none or nothing matches)
+             (shown when making a new branch: ctrl-n mode or nothing matches)
   ctrl-t     tool: nested picker of installed tools and recent commands;
              type a new command/args to launch it (unless CMD was given)
-  ctrl-u     git remote update, then reload
+  ctrl-n     new-branch mode: Enter creates a branch named after what you typed
+             (never the highlighted one); the list shows names that may clash
+  ctrl-l     git remote update, then reload
   The last used values are remembered for next time.
 
 Environment variables:
@@ -91,7 +93,7 @@ Environment variables:
                          current HEAD instead of the default: origin/HEAD
                          (falling back to origin/main, then origin/master)
   WTCODE_BASE_REF        Fork brand-new branches from this ref (overrides the above)
-  WTCODE_BRANCH_SCOPE    Initial picker scope (all|none|worktree|local|remote)
+  WTCODE_BRANCH_SCOPE    Initial picker scope (all|worktree|local|remote)
   WTCODE_BRANCH_ORDER    Initial picker order (recent|name|full)
   WTCODE_STATE_FILE      Where the picker remembers its last state
                          (default: \$XDG_STATE_HOME/wtcode/state; empty disables)
@@ -166,7 +168,8 @@ WTCODE_CMDS_TO_TRY=(
 ## interactive picker support -- remembered state, key-binding callbacks
 ###############################################################################
 # The fzf picker lets you cycle some options with key bindings:
-#   ctrl-s scope   ctrl-o order   ctrl-r base ref   ctrl-u update
+#   ctrl-s scope   ctrl-o order   ctrl-r base ref   ctrl-l update
+#   ctrl-n new-branch mode: Enter makes a new branch named after what you typed
 #   ctrl-t tool: opens a nested picker of installed tools and recently
 #           launched commands; type anything to launch a new command/args
 # The current values live in small files under a temp dir ($1 of the --fzf-*
@@ -174,7 +177,7 @@ WTCODE_CMDS_TO_TRY=(
 # remembered in $WTCODE_STATE_FILE for next time. none of this is touched when
 # a BRANCH is given on the command line.
 
-WTCODE_SCOPES=(all none worktree local remote)
+WTCODE_SCOPES=(all worktree local remote)
 WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name alone
 
 --self() {
@@ -282,6 +285,7 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     --pick-valid "$(--state-get base)" default $(--base-modes) > "$dir/base"
   fi
   --base-label "$(<"$dir/base")" > "$dir/base_label"
+  echo off > "$dir/new"   # ^n new-branch mode; deliberately not remembered
   if [[ -n ${WTCODE_TOOL_FIXED-} ]]; then
     echo "$WTCODE_TOOL_FIXED" > "$dir/tool_fixed"
   else
@@ -314,6 +318,7 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     scope) choices=("${WTCODE_SCOPES[@]}") ;;
     order) choices=("${WTCODE_ORDERS[@]}") ;;
     base)  choices=($(--base-modes)) ;;
+    new)   choices=(off on) ;;
   esac
   --next-in-cycle "$(<"$dir/$kind")" "${choices[@]}" > "$dir/$kind.new"
   mv "$dir/$kind.new" "$dir/$kind"
@@ -401,7 +406,8 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       --bind "ctrl-s:execute-silent($b --fzf-cycle $dir_q scope)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-r:execute-silent($b --fzf-cycle $dir_q base)+transform-header($b --fzf-header $dir_q force-base)" \
-      --bind "ctrl-u:change-header(updating remotes...)+reload($b --fzf-update $dir_q)" \
+      --bind "ctrl-l:change-header(updating remotes...)+reload($b --fzf-update $dir_q)" \
+      --bind "ctrl-n:execute-silent($b --fzf-cycle $dir_q new)+transform-header($b --fzf-header $dir_q)" \
       --bind "result:transform-header($b --fzf-header $dir_q)" \
       ${opts[@]+"${opts[@]}"} \
       --prompt 'wtcode> ' || true
@@ -415,21 +421,25 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
 }
 
 # --fzf-header DIR [force-base]
-# showing ^r only matters when a *new* branch is about to be made: scope none,
-# or nothing matches (fzf tells us via $FZF_MATCH_COUNT); ^r itself reveals it.
-# the current values are bold (fzf --ansi styles headers too)
+# ^r (base of the new branch) only matters when a *new* branch is about to be
+# made: ^n mode, or nothing matches (fzf tells us via $FZF_MATCH_COUNT); ^r
+# itself reveals it. the current values are bold (fzf --ansi styles headers)
 --fzf-header() {
-  local dir=$1 scope order tool b=$'\e[1m' r=$'\e[0m'
-  scope=$(<"$dir/scope")
+  local dir=$1 scope order tool new line b=$'\e[1m' r=$'\e[0m'
+  scope=$(<"$dir/scope") new=$(<"$dir/new")
   case $(<"$dir/order") in full) order=remote/name ;; *) order=$(<"$dir/order") ;; esac
   if [[ -r $dir/tool_fixed ]]; then tool="tool: $b$(<"$dir/tool_fixed")$r (given)"; else tool="^t tool: $b$(<"$dir/tool")$r"; fi
-  if [[ $scope == none || ${2-} == force-base || ${FZF_MATCH_COUNT-} == 0 ]]; then
-    echo "$tool   ^r new branch from: $b$(<"$dir/base_label")$r"
-  else
-    echo 'Select a worktree/branch, or type a new name to create one (:name: avoids matching existing ones).'
-    echo "$tool"
+  line="$tool   ^n new branch: $b$new$r"
+  if [[ $new == on || ${2-} == force-base || ${FZF_MATCH_COUNT-} == 0 ]]; then
+    line+="   ^r from: $b$(<"$dir/base_label")$r"
   fi
-  echo "^s scope: $b$scope$r   ^o order: $b$order$r   ^u update remotes"
+  if [[ $new == on ]]; then
+    echo 'Enter creates a new branch named after what you typed; listed names may clash.'
+  elif [[ ${FZF_MATCH_COUNT-} != 0 ]]; then
+    echo 'Select a worktree/branch, or type a new name to create one (:name: avoids matching existing ones).'
+  fi
+  echo "$line"
+  echo "^s scope: $b$scope$r   ^o order: $b$order$r   ^l update remotes"
 }
 
 # --list-branches [SCOPE] [ORDER] -- candidates for the picker
@@ -437,7 +447,6 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
 --list-branches() {
   local scope=${1:-all} order=${2:-recent}
   { set +x; } &>/dev/null
-  [[ $scope == none ]] && return 0
   # NOTE: git branch --format uses ref-filter syntax which doesn't support
   # pretty-format's %<(N,trunc) truncation. Using bash to handle truncation,
   # alignment, and coloring instead.
@@ -518,12 +527,17 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     # key bindings cycle scope/order/base/tool, see --fzf-* below
     local fzf_dir
     fzf_dir=$(--fzf-init)
-    branch_name=$(--fzf-pick "$fzf_dir" | cut -f1 | tail -1)
-    if [[ -n ${branch_name-} ]]; then
-      --fzf-commit "$fzf_dir"
-      # an empty scope means the typed text is a new name, never an existing ref
-      [[ $(<"$fzf_dir/scope") == none ]] && branch_name=:$branch_name
+    # fzf prints the typed query, then the selection (if any)
+    local picked
+    picked=$(--fzf-pick "$fzf_dir")
+    if [[ $(<"$fzf_dir/new") == on ]]; then
+      # ^n mode: the typed text is a new name, never an existing ref
+      branch_name=$(head -1 <<< "$picked")
+      [[ -n $branch_name ]] && branch_name=:$branch_name
+    else
+      branch_name=$(cut -f1 <<< "$picked" | tail -1)
     fi
+    [[ -z ${branch_name-} ]] || --fzf-commit "$fzf_dir"
     rm -rf "$fzf_dir"
   else  # abort if fzf not available
     branch_name=${1:?Need a worktree/branch name as first argument}; shift
