@@ -18,7 +18,7 @@ shopt -s extglob
 }
 
 # declare all WTCODE_* env vars and their defaults in one place
-: ${WTCODE_CMD:=}
+: ${WTCODE_TOOL:=${WTCODE_CMD:-}}   # WTCODE_CMD: deprecated alias
 : ${WTCODE_USE_CURRENT_BRANCH:=false}
 : ${WTCODE_BASE_REF:=}          # ref to fork new branches from (also: --base REF)
 : ${WTCODE_BRANCH_SCOPE:=}      # initial picker scope: all|worktree|local|remote
@@ -66,8 +66,8 @@ Usage: wtcode [--base REF] [BRANCH] [CMD [CMD-ARGS...]]
              (use multiple colons to avoid fzf matching, e.g., :::my-branch
              or my-branch:::).
 
-  CMD        Command to launch in the worktree (default: \$WTCODE_CMD,
-             or first available of: ${WTCODE_CMDS_TO_TRY[*]}, \$SHELL).
+  CMD        Command to launch in the worktree (default: \$WTCODE_TOOL,
+             or first available of: ${WTCODE_TOOLS_TO_TRY[*]}, \$SHELL).
 
   --exec     Skip branch argument; select interactively, then launch CMD.
 
@@ -88,7 +88,7 @@ Interactive picker keys (when BRANCH is omitted):
   Changes made in the picker are remembered for next time, even if canceled.
 
 Environment variables:
-  WTCODE_CMD             Default tool to launch (e.g., claude, lazygit, vim)
+  WTCODE_TOOL            Default tool to launch (e.g., claude, lazygit, vim); WTCODE_CMD is a deprecated alias
   WTCODE_USE_CURRENT_BRANCH
                          When creating a brand-new branch, fork it from the
                          current HEAD instead of the default: origin/HEAD
@@ -128,13 +128,13 @@ Examples:
   wtcode feature-x claude --resume  # launch claude with --resume
   wtcode --exec claude --resume     # select interactively, launch claude --resume
   wtcode :new-feature               # create new branch and worktree
-  WTCODE_CMD=cursor wtcode feature  # use cursor as the default tool
+  WTCODE_TOOL=cursor wtcode feature  # use cursor as the default tool
 USAGE
 }
 
 # commands to try as default, in order of preference
-WTCODE_CMDS_TO_TRY=(
-    $WTCODE_CMD
+WTCODE_TOOLS_TO_TRY=(
+    $WTCODE_TOOL
     claude
     aider
     codex
@@ -287,10 +287,10 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
 # --available-tools -- installed tools worth offering, one per line
 --available-tools() {
   local c seen=' '
-  for c in ${WTCODE_CMD:+"$WTCODE_CMD"} "${WTCODE_CMDS_TO_TRY[@]}" "${SHELL:-bash}"; do
+  for c in ${WTCODE_TOOL:+"$WTCODE_TOOL"} "${WTCODE_TOOLS_TO_TRY[@]}" "${SHELL:-bash}"; do
     [[ -n $c && $seen != *" $c "* ]] || continue
-    # an explicit $WTCODE_CMD is always offered; the rest only if installed
-    if [[ $c == "${WTCODE_CMD-}" ]] || type "$c" &>/dev/null; then
+    # an explicit $WTCODE_TOOL is always offered; the rest only if installed
+    if [[ $c == "${WTCODE_TOOL-}" ]] || type "$c" &>/dev/null; then
       echo "$c"; seen+="$c "
     fi
   done
@@ -314,10 +314,10 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
   if [[ -n ${WTCODE_TOOL_FIXED-} ]]; then
     echo "$WTCODE_TOOL_FIXED" > "$dir/tool_fixed"
   else
-    # initial: $WTCODE_CMD, else the last used command if still installed,
+    # initial: $WTCODE_TOOL, else the last used command if still installed,
     # else the first installed tool
-    v=${WTCODE_CMD:-$(--state-get tool)}
-    [[ -n $WTCODE_CMD ]] || type "${v%% *}" &>/dev/null || v=$(--available-tools | head -1)
+    v=${WTCODE_TOOL:-$(--state-get tool)}
+    [[ -n $WTCODE_TOOL ]] || type "${v%% *}" &>/dev/null || v=$(--available-tools | head -1)
     printf '%s\n' "$v" > "$dir/tool"
   fi
   echo "$dir"
@@ -898,7 +898,7 @@ APPLESCRIPT
     [[ ${#_words[@]} -eq 0 ]] || set -- "${_words[@]}"
   fi
   if [[ $# -eq 0 ]]; then
-    for _cmd in "${WTCODE_CMDS_TO_TRY[@]}"; do
+    for _cmd in "${WTCODE_TOOLS_TO_TRY[@]}"; do
       [[ -n "$_cmd" ]] && type "$_cmd" &>/dev/null && set -- "$_cmd" && break
     done
     # fall back to an interactive shell

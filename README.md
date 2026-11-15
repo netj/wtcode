@@ -42,7 +42,7 @@ wtcode --exec CMD [CMD-ARGS...]
 ```
 
 - **`BRANCH`** -- Git branch or worktree name. If omitted and [fzf](https://github.com/junegunn/fzf) is available, interactively select one. Surround with `:` to create a new branch (use `:::name` or `name:::` to avoid fzf matching the colons).
-- **`CMD`** -- Command to launch in the worktree. Defaults to `$WTCODE_CMD`, or the first available of: `claude`, `aider`, `codex`, `$SHELL`.
+- **`CMD`** -- Command to launch in the worktree. Defaults to `$WTCODE_TOOL`, or the first available of: `claude`, `aider`, `codex`, `$SHELL`.
   When `CMD` resolves to plain `claude` (no extra args) in a worktree that already existed, wtcode launches `claude /resume` so it opens straight into your last session there. Press `Esc` in the picker to start a new session instead.
 - **`--exec`** -- Skip the branch argument; select interactively via fzf, then launch `CMD`.
 - **`--help`** / **`--version`** -- Show help or version info.
@@ -56,14 +56,14 @@ wtcode feature-x claude --resume  # launch claude with flags
 wtcode --exec claude --resume     # select interactively, launch claude --resume
 wtcode :new-feature               # create new branch and worktree
 wtcode                            # interactive branch selection via fzf
-WTCODE_CMD=cursor wtcode feature  # use cursor as default tool
+WTCODE_TOOL=cursor wtcode feature  # use cursor as default tool
 ```
 
 ## Environment variables
 
 | Variable | Description |
 |---|---|
-| `WTCODE_CMD` | Default tool to launch (e.g., `claude`, `lazygit`, `vim`, `cursor`) |
+| `WTCODE_TOOL` | Default tool to launch (e.g., `claude`, `lazygit`, `vim`, `cursor`); `WTCODE_CMD` is a deprecated alias |
 | `WTCODE_USE_CURRENT_BRANCH` | When creating a brand-new branch, fork it from the current HEAD instead of the default: `origin/HEAD` (falling back to `origin/main`, then `origin/master`) |
 | `WTCODE_BASE_REF` | Fork brand-new branches from this ref (also `wtcode --base REF`) |
 | `WTCODE_BRANCH_SCOPE` | Initial picker scope: `all`, `worktree`, `local`, `remote` |

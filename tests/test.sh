@@ -6,7 +6,7 @@ set -uo pipefail
 
 WTCODE=$(cd "$(dirname "$0")/.." && pwd)/wtcode.sh
 export WTCODE   # (the fake fzf stub calls back into it)
-unset WTCODE_DEBUG WTCODE_CMD GIT_WORKTREE_ROOT 2>/dev/null || true
+unset WTCODE_DEBUG WTCODE_CMD WTCODE_TOOL GIT_WORKTREE_ROOT 2>/dev/null || true
 # tests must never send-keys into whatever pane/tab/window happens to be
 # "current" -- force the exec-directly path regardless of the environment
 # tests run in. Unsetting TMUX alone is NOT enough: --terminal-send-keys
@@ -339,8 +339,10 @@ test_history_and_tool_picker_state() {
   source <(sed -n '/^--history-file()/,/^}/p;/^--history-add()/,/^}/p' "$WTCODE")
   --history-add "claude --resume"; --history-add "aider"; --history-add "claude --resume"
   assert_eq "claude --resume aider" "$(tr '\n' ' ' < "$dir/state.cmds" | sed 's/ $//')" "MRU, deduped" || return 1
+  d=$(WTCODE_TOOL="vim -R" "$WTCODE" --fzf-init)
+  assert_eq "vim -R" "$(<"$d/tool")" "WTCODE_TOOL seeds the tool, args included"
   d=$(WTCODE_CMD="vim -R" "$WTCODE" --fzf-init)
-  assert_eq "vim -R" "$(<"$d/tool")" "WTCODE_CMD seeds the tool, args included"
+  assert_eq "vim -R" "$(<"$d/tool")" "deprecated WTCODE_CMD still seeds the tool"
 }
 
 test_tmux_version_gate() {
