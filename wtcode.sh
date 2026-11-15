@@ -406,7 +406,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       --bind "ctrl-s:execute-silent($b --fzf-cycle $dir_q scope)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-r:execute-silent($b --fzf-cycle $dir_q base)+transform-header($b --fzf-header $dir_q force-base)" \
-      --bind "ctrl-l:change-header(updating remotes...)+reload($b --fzf-update $dir_q)" \
+      --bind "ctrl-l:execute-silent(: > $dir_q/updating)+transform-header($b --fzf-header $dir_q)+reload($b --fzf-update $dir_q)" \
       --bind "ctrl-n:execute-silent($b --fzf-cycle $dir_q new)+transform-header($b --fzf-header $dir_q)" \
       --bind "result:transform-header($b --fzf-header $dir_q)" \
       ${opts[@]+"${opts[@]}"} \
@@ -417,6 +417,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
 
 --fzf-update() {
   GIT_TERMINAL_PROMPT=0 git remote update </dev/null &>/dev/null || true
+  rm -f "$1/updating"   # (the header, in place, goes back on the next result)
   --fzf-list "$1"
 }
 
@@ -439,7 +440,9 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     echo 'Select a worktree/branch, or type a new name to create one (:name: avoids matching existing ones).'
   fi
   echo "$line"
-  echo "^s scope: $b$scope$r   ^o order: $b$order$r   ^l update remotes"
+  local update='^l update remotes'
+  [[ ! -e $dir/updating ]] || update="^l ${b}updating remotes...$r"   # inline: the rest of the header stays
+  echo "^s scope: $b$scope$r   ^o order: $b$order$r   $update"
 }
 
 # --list-branches [SCOPE] [ORDER] -- candidates for the picker
