@@ -347,7 +347,13 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   # fzf prints just the query when nothing matches, else query, key, choice
   { read -r query || true; read -r key || true; read -r choice || true; } <<< "$out"
   if [[ $key == alt-enter || -z $choice ]]; then choice=$query; fi
-  [[ -n $choice ]] && echo "$choice" > "$dir/tool"
+  if [[ -n $choice ]]; then
+    echo "$choice" > "$dir/tool"
+    # remembered right away: it's a deliberate choice that should survive
+    # canceling the main picker
+    --state-save tool="$choice"
+    --history-add "$choice"
+  fi
   return 0
 }
 

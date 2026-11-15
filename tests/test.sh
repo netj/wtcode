@@ -359,6 +359,20 @@ test_alt_enter_creates_typed_name() {
   assert_eq "$GIT_WORKTREE_ROOT/zeta" "$out" "without alt-enter the selection wins over the query"
 }
 
+test_picked_tool_is_remembered_even_if_main_picker_is_canceled() {
+  local dir=$1 d
+  export WTCODE_STATE_FILE=$dir/state
+  --fake-fzf "$dir"
+  d=$("$WTCODE" --fzf-init)
+  # (an installed command, since a remembered tool must still exist to be the default)
+  # the nested picker returns just the typed text; nothing launches afterwards
+  PATH="$dir/bin:$PATH" STUB_QUERY="pwd -P" "$WTCODE" --fzf-pick-tool "$d"
+  assert_eq "pwd -P" "$(<"$d/tool")" "session value" || return 1
+  assert_contains "$(cat "$dir/state")" "tool=pwd -P" "saved to state without a commit" || return 1
+  assert_eq "pwd -P" "$(head -1 "$dir/state.cmds")" "and to the command history" || return 1
+  assert_eq "pwd -P" "$("$WTCODE" --fzf-init | { read -r x; <"$x/tool" cat; })" "next picker starts on it"
+}
+
 test_state_untouched_by_noninteractive_runs() {
   local dir=$1
   export WTCODE_STATE_FILE=$dir/state
@@ -580,6 +594,7 @@ ALL_TESTS=(
   test_history_and_tool_picker_state
   test_tmux_version_gate
   test_alt_enter_creates_typed_name
+  test_picked_tool_is_remembered_even_if_main_picker_is_canceled
   test_state_untouched_by_noninteractive_runs
   test_base_ref_env_and_flag
   test_provisions_claude_settings_symlinks
