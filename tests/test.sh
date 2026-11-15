@@ -292,6 +292,17 @@ test_history_and_tool_picker_state() {
   assert_eq "vim -R" "$(<"$d/tool")" "WTCODE_CMD seeds the tool, args included"
 }
 
+test_tmux_version_gate() {
+  local dir=$1 v
+  mkdir "$dir/bin"
+  for v in "3.8:0" "3.3a:0" "next-3.4:0" "3.2a:1" "2.9:1" "4.0:0"; do
+    printf '#!/bin/sh\necho "tmux %s"\n' "${v%:*}" > "$dir/bin/tmux"; chmod +x "$dir/bin/tmux"
+    local got=0
+    ( PATH="$dir/bin:$PATH"; source <(sed -n '/^--tmux-at-least()/,/^}/p' "$WTCODE"); --tmux-at-least 3 3 ) || got=1
+    assert_eq "${v#*:}" "$got" "tmux ${v%:*} supports popup env (-e)" || return 1
+  done
+}
+
 test_state_untouched_by_noninteractive_runs() {
   local dir=$1
   export WTCODE_STATE_FILE=$dir/state
@@ -510,6 +521,7 @@ ALL_TESTS=(
   test_list_orders
   test_fzf_cycle_and_state
   test_history_and_tool_picker_state
+  test_tmux_version_gate
   test_state_untouched_by_noninteractive_runs
   test_base_ref_env_and_flag
   test_provisions_claude_settings_symlinks

@@ -33,6 +33,7 @@ else
   : ${WTCODE_TERMINAL_MODE:=send-keys}
 fi
 : ${WTCODE_DEBUG:=}
+export WTCODE_BASE_REF WTCODE_USE_CURRENT_BRANCH   # key-binding callbacks run as child processes
 
 ${WTCODE_DEBUG:+set -x}
 
@@ -77,8 +78,9 @@ Interactive picker keys (when BRANCH is omitted):
   ctrl-s     scope: all, none (new branch only), worktree, local, remote
   ctrl-o     order: recent, name, type (worktree/local/remote)
   ctrl-r     base for a new branch: default, current branch, origin/HEAD
-  ctrl-t     tool: nested picker of installed tools and recent commands;
-             type a new command/args to launch it (unless CMD was given)
+  ctrl-t/alt-t  tool: nested picker of installed tools and recent commands;
+                type a new command/args to launch it (unless CMD was given)
+  (in tmux the picker is a display-popup, so a prefix like C-t still reaches fzf)
   ctrl-u     git remote update, then reload
   The last used values are remembered for next time.
 
@@ -328,6 +330,66 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   return 0
 }
 
+# --tmux-at-least MAJOR MINOR -- is the running tmux at least this version?
+--tmux-at-least() {
+  local v; v=$(tmux -V 2>/dev/null) || return 1
+  [[ $v =~ ([0-9]+)\.([0-9]+) ]] || return 1
+  (( BASH_REMATCH[1] > $1 || (BASH_REMATCH[1] == $1 && BASH_REMATCH[2] >= $2) ))
+}
+
+# --fzf-pick DIR -- run the picker, print fzf's output (query, then selection).
+# inside tmux, fzf's own --tmux is NOT used: since tmux 3.7/fzf 0.7x it opens
+# a floating *pane*, whose keys go through tmux's key tables, so the prefix
+# (e.g. OPTMUX's C-t) and root bindings (bind -n) get swallowed before fzf
+# sees them. a display-popup overlay hands every key to the program instead.
+--fzf-pick() {
+  local dir=$1
+  if [[ -n ${TMUX:-} ]] && type tmux &>/dev/null && --tmux-at-least 3 3; then
+    local self cmd envs=() v
+    self=$(--self)
+    printf -v cmd '%q %q --fzf-run %q > %q && : > %q' "$BASH" "$self" "$dir" "$dir/out" "$dir/done"
+    : > "$dir/in_popup"
+    # a popup doesn't inherit our environment; pass along what matters
+    for v in $(compgen -e); do
+      [[ $v =~ ^(PATH|HOME|SHELL|USER|LOGNAME|TMPDIR|LANG|LC_[A-Z]+|XDG_[A-Z_]+|WTCODE_[A-Z_]+|GIT_[A-Z_]+|FZF_[A-Z_]+)$ ]] &&
+        envs+=(-e "$v=${!v}")
+    done
+    if tmux display-popup -E ${TMUX_PANE:+-t "$TMUX_PANE"} -d "$PWD" -w 90% -h 70% -b rounded \
+         -T ' wtcode ' ${envs[@]+"${envs[@]}"} "$cmd" 2>/dev/null && [[ -e $dir/done ]]; then
+      cat "$dir/out"
+      return 0
+    fi
+    rm -f "$dir/in_popup"   # no client to show a popup on, etc.: fall back
+  fi
+  --fzf-run "$dir"
+}
+
+# --fzf-run DIR -- the picker itself (also what runs inside the tmux popup)
+--fzf-run() {
+  local dir=$1 self b dir_q
+  { set +x; } &>/dev/null
+  self=$(--self)
+  printf -v b '%q %q' "$BASH" "$self"   # command prefix for the key bindings
+  printf -v dir_q '%q' "$dir"
+  local opts=()
+  [[ -e $dir/in_popup ]] || opts+=(--tmux 90%,70%)
+  if [[ ! -e $dir/tool_fixed ]]; then
+    opts+=(--bind "ctrl-t:execute($b --fzf-pick-tool $dir_q)+transform-header($b --fzf-header $dir_q)"
+           --bind "alt-t:execute($b --fzf-pick-tool $dir_q)+transform-header($b --fzf-header $dir_q)")
+  fi
+  --list-branches "$(<"$dir/scope")" "$(<"$dir/order")" |
+  fzf --ansi --color --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
+      --preview 'echo {3}' --preview-window 'down:2:wrap' \
+      --header "$(--fzf-header "$dir")" \
+      --bind "ctrl-s:execute-silent($b --fzf-cycle $dir_q scope)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
+      --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
+      --bind "ctrl-r:execute-silent($b --fzf-cycle $dir_q base)+transform-header($b --fzf-header $dir_q)" \
+      --bind "ctrl-u:change-header(updating remotes...)+reload($b --fzf-update $dir_q)" \
+      --bind "load:transform-header($b --fzf-header $dir_q)" \
+      ${opts[@]+"${opts[@]}"} \
+      --prompt '> ' || true
+}
+
 --fzf-list() { --list-branches "$(<"$1/scope")" "$(<"$1/order")"; }
 
 --fzf-update() {
@@ -341,7 +403,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   echo '[wtcode] Select the worktree/branch or create new to launch your code tool in it.'
   echo '         Typing colons `:` avoids selecting an existing one to create new with similar names.'
   echo "  ^s scope: $(<"$dir/scope")   ^o order: $(<"$dir/order")   ^r new branch from: $(--base-ref-label "$(<"$dir/base")")"
-  echo "  ^t tool: $tool   ^u update remotes"
+  echo "  ^t/M-t tool: $tool   ^u update remotes"
 }
 
 # --list-branches [SCOPE] [ORDER] -- candidates for the picker
@@ -421,30 +483,9 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   elif type fzf &>/dev/null; then
     # if branch name unspecified, use fzf to select one or enter a new name.
     # key bindings cycle scope/order/base/tool, see --fzf-* below
-    local fzf_dir fzf_dir_q self b
+    local fzf_dir
     fzf_dir=$(--fzf-init)
-    self=$(--self)
-    printf -v b '%q %q' "$BASH" "$self"   # command prefix for the key bindings
-    printf -v fzf_dir_q '%q' "$fzf_dir"
-    local bind_tool=()
-    [[ -z ${WTCODE_TOOL_FIXED-} ]] &&
-      bind_tool=(--bind "ctrl-t:execute($b --fzf-pick-tool $fzf_dir_q)+transform-header($b --fzf-header $fzf_dir_q)")
-    branch_name=$(
-      { set +x; } &>/dev/null
-      --list-branches "$(<"$fzf_dir/scope")" "$(<"$fzf_dir/order")" |
-      fzf --ansi --color --tmux 90%,70% --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
-          --preview 'echo {3}' --preview-window 'down:2:wrap' \
-          --header "$(--fzf-header "$fzf_dir")" \
-          --bind "ctrl-s:execute-silent($b --fzf-cycle $fzf_dir_q scope)+reload($b --fzf-list $fzf_dir_q)+transform-header($b --fzf-header $fzf_dir_q)" \
-          --bind "ctrl-o:execute-silent($b --fzf-cycle $fzf_dir_q order)+reload($b --fzf-list $fzf_dir_q)+transform-header($b --fzf-header $fzf_dir_q)" \
-          --bind "ctrl-r:execute-silent($b --fzf-cycle $fzf_dir_q base)+transform-header($b --fzf-header $fzf_dir_q)" \
-          --bind "ctrl-u:change-header(updating remotes...)+reload($b --fzf-update $fzf_dir_q)" \
-          --bind "load:transform-header($b --fzf-header $fzf_dir_q)" \
-          ${bind_tool[@]+"${bind_tool[@]}"} \
-          --prompt '> ' |
-      cut -f1 |
-      tail -1
-    )
+    branch_name=$(--fzf-pick "$fzf_dir" | cut -f1 | tail -1)
     if [[ -n ${branch_name-} ]]; then
       --fzf-commit "$fzf_dir"
       # an empty scope means the typed text is a new name, never an existing ref
