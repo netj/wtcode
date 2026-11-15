@@ -76,7 +76,8 @@ Usage: wtcode [--base REF] [BRANCH] [CMD [CMD-ARGS...]]
 
 Interactive picker keys (when BRANCH is omitted):
   ctrl-s     scope: all, worktree, local, remote (all and worktree also show and
-             match a worktree directory that drifted from its branch name)
+             match a worktree directory that drifted from its branch name
+             or sits outside the main checkout and worktrees root)
   ctrl-o     order: recent, name (remote shown as a suffix), remote/name
   ctrl-r     base for a new branch: the default, or the current branch
   ctrl-t     tool: nested picker of installed tools and recent commands;
@@ -459,11 +460,11 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   local c_reset=$'\e[0m' c_green=$'\e[32m' c_cyan=$'\e[36m' c_blue=$'\e[34m' c_yellow=$'\e[33m' c_dim=$'\e[2m'
   local c_red=$'\e[31m' local_branches sort_args
   local_branches=$(git branch --format='%(refname:lstrip=2)')
-  # where wtcode puts worktrees (see --enter-git-worktree)
-  local wt_root=${GIT_WORKTREE_ROOT:-}
-  if [[ -z $wt_root ]]; then
-    wt_root=$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && echo "$(pwd -P).worktrees") || wt_root=
-  fi
+  # the two places worktrees are expected: the main checkout, and the root
+  # where wtcode puts the rest (see --enter-git-worktree)
+  local main_wt wt_root=${GIT_WORKTREE_ROOT:-}
+  main_wt=$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && pwd -P) || main_wt=
+  [[ -z $wt_root && -z $main_wt ]] || : ${wt_root:=$main_wt.worktrees}
   case $order in
     name) sort_args=(-k3,3f -k1,1n) ;;   # by name alone; local before remote on ties
     full) sort_args=(-k4,4f) ;;          # by remote/name
@@ -506,11 +507,17 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       if [[ $order == name ]]; then nm=${branch#*/} suf=" (${branch%%/*})"; else pre=${branch%%/*}/ nm=${branch#*/}; fi
     else ind=' '; c=$c_reset
     fi
-    # a worktree that has drifted from its branch name (wtcode puts the worktree
-    # for branch X at <root>/X) also shows its directory, which is then
-    # searchable too. local/remote scopes are about branches only
-    if [[ -n $worktree && -n $wt_root && $worktree == "$wt_root"/* && ( $scope == all || $scope == worktree ) ]]; then
-      local rel=${worktree#"$wt_root"/}
+    # worktrees also show where they are, searchable too, when that is
+    # unexpected: under the root but drifted from the branch name (wtcode puts
+    # branch X at <root>/X), or somewhere else entirely. the main checkout and
+    # in-place worktrees show nothing. local/remote scopes are about branches
+    if [[ -n $worktree && $worktree != "$main_wt" && ( $scope == all || $scope == worktree ) ]]; then
+      local rel=$worktree
+      if [[ -n $wt_root && $worktree == "$wt_root"/* ]]; then
+        rel=${worktree#"$wt_root"/}
+      elif [[ $worktree == "$HOME"/* ]]; then
+        rel="~/${worktree#"$HOME"/}"
+      fi
       (( ${#rel} > 28 )) && rel="..${rel: -26}"
       [[ $rel == "$branch" ]] || suf=" @ $rel"
     fi

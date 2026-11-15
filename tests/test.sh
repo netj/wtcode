@@ -269,7 +269,7 @@ test_list_orders() {
   assert_contains "$shown" "alpha (origin)" "name (remote) suffix"
 }
 
-test_drifted_worktree_dir_shown_and_searchable() {
+test_unexpected_worktree_dir_shown_and_searchable() {
   local dir=$1 plain='s/\x1b\[[0-9;]*m//g' out
   git worktree add -q "$GIT_WORKTREE_ROOT/old-dir" -b feat
   git worktree add -q "$GIT_WORKTREE_ROOT/same" -b same
@@ -283,7 +283,10 @@ test_drifted_worktree_dir_shown_and_searchable() {
   assert_contains "$out" "@ old-dir" "worktree scope shows it too" || return 1
   out=$("$WTCODE" --list-branches local recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
   [[ $out != *"@ old-dir"* ]] || { echo "  dir shown in the local (branches only) scope" >&2; return 1; }
-  # worktrees outside wtcode's root (e.g. the main checkout) aren't "drifted": nothing shown
+  # a worktree outside both the main checkout and the root shows its (~-abbreviated) path
+  mkdir "$dir/ext"; git worktree add -q "$dir/ext/elsewhere" -b away
+  assert_contains "$("$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g' | grep '^[+ *] away')" "@ ~/ext/elsewhere" "path shown outside the usual places" || return 1
+  # the main checkout is recognized: nothing shown
   [[ $(grep '^[+ *] main' <<< "$("$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')") != *"@"* ]] || { echo "  dir shown for the main checkout" >&2; return 1; }
   # selecting still returns the branch name, whatever matched
   assert_eq "feat" "$("$WTCODE" --list-branches all recent | grep -a 'feat' | head -1 | cut -f1)" "row id stays the branch"
@@ -610,7 +613,7 @@ ALL_TESTS=(
   test_slash_in_new_branch_name
   test_list_scopes
   test_list_orders
-  test_drifted_worktree_dir_shown_and_searchable
+  test_unexpected_worktree_dir_shown_and_searchable
   test_base_labels_and_header
   test_fzf_cycle_and_state
   test_history_and_tool_picker_state
