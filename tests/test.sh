@@ -282,7 +282,7 @@ test_base_labels_and_header() {
   assert_contains "$(--header "$d")" "alt-enter: create new worktree" "alt-enter hint" || return 1
   : > "$d/updating"   # ^l pressed: only that spot changes, the rest of the header stays
   assert_contains "$(--header "$d")" "^l updating remotes..." "inline update indicator" || return 1
-  assert_contains "$(--header "$d")" "^s scope: all" "rest of the header stays while updating" || return 1
+  assert_contains "$(--header "$d")" "^s scope: all branches" "rest of the header stays while updating" || return 1
   rm "$d/updating"
   "$WTCODE" --fzf-cycle "$d" base
   assert_contains "$(--header "$d")" "^r branch from: main (current)" "label follows ^r"

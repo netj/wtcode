@@ -427,7 +427,10 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
 # --fzf-header DIR -- the current values are bold (fzf --ansi styles headers)
 --fzf-header() {
   local dir=$1 scope order tool update b=$'\e[1m' r=$'\e[0m'
-  scope=$(<"$dir/scope")
+  case $(<"$dir/scope") in
+    worktree) scope=worktrees ;;
+    *)        scope="$(<"$dir/scope") branches" ;;   # all/local/remote branches
+  esac
   case $(<"$dir/order") in full) order=remote/name ;; *) order=$(<"$dir/order") ;; esac
   if [[ -r $dir/tool_fixed ]]; then tool="tool: $b$(<"$dir/tool_fixed")$r (given)"; else tool="^t tool: $b$(<"$dir/tool")$r"; fi
   update='^l update remotes'
