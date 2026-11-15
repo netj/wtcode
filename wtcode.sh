@@ -444,7 +444,8 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   --list-branches "$(<"$dir/scope")" "$(<"$dir/order")" |
   WTCODE_BASE_REF=$WTCODE_BASE_REF WTCODE_USE_CURRENT_BRANCH=$WTCODE_USE_CURRENT_BRANCH \
   fzf --ansi --color --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
-      --preview 'echo {3}' --preview-window 'down:2:wrap' \
+      --preview "$b --fzf-preview {1} {3}" \
+      --preview-window 'right,50%,wrap,<120(down,40%,wrap)' \
       --header "$(--fzf-header "$dir")" \
       --bind "ctrl-s:execute-silent($b --fzf-cycle $dir_q scope)+reload($b --fzf-list $dir_q)" \
       --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)" \
@@ -454,6 +455,23 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       --bind "load:transform-header($b --fzf-header $dir_q)" \
       ${opts[@]+"${opts[@]}"} \
       --prompt "$prompt" || true
+}
+
+# --fzf-preview BRANCH [LINE] -- preview pane: the picker's one-line summary,
+# then what BRANCH has relative to the base new branches fork from
+# (git diff --stat BASE...BRANCH, plus the commits that are only on BRANCH)
+--fzf-preview() {
+  local branch=${1-} line=${2-} base b=$'\e[1m' r=$'\e[0m'
+  [[ -z $line ]] || printf '%s\n\n' "$line"
+  [[ -n $branch ]] || return 0
+  base=$(--default-base-ref 2>/dev/null) || return 0
+  if [[ $branch == "$base" ]] || ! git rev-parse --verify -q "$branch^{commit}" &>/dev/null; then
+    return 0
+  fi
+  printf '%s%s...%s%s\n' "$b" "${base:0:40}" "$branch" "$r"
+  git log --oneline --no-decorate --color=never -n 10 "$base..$branch" 2>/dev/null
+  echo
+  git -c color.ui=always diff --stat=${FZF_PREVIEW_COLUMNS:-80} "$base...$branch" 2>/dev/null
 }
 
 --fzf-list() { --list-branches "$(<"$1/scope")" "$(<"$1/order")"; }
