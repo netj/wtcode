@@ -83,7 +83,7 @@ Interactive picker keys (when BRANCH is omitted):
   alt-enter  create a new branch named after what you typed (never the
              highlighted one); plain Enter does that too when nothing matches
   ctrl-l     git remote update, then reload
-  The last used values are remembered for next time.
+  Changes made in the picker are remembered for next time, even if canceled.
 
 Environment variables:
   WTCODE_CMD             Default tool to launch (e.g., claude, lazygit, vim)
@@ -172,8 +172,8 @@ WTCODE_CMDS_TO_TRY=(
 #   ctrl-t tool: opens a nested picker of installed tools and recently
 #           launched commands; type anything to launch a new command/args
 # The current values live in small files under a temp dir ($1 of the --fzf-*
-# callbacks, which fzf runs as separate processes), and the final values are
-# remembered in $WTCODE_STATE_FILE for next time. none of this is touched when
+# callbacks, which fzf runs as separate processes); every change is also saved
+# to $WTCODE_STATE_FILE right away, for next time. none of this is touched when
 # a BRANCH is given on the command line.
 
 WTCODE_SCOPES=(all worktree local remote)
@@ -296,7 +296,8 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
   echo "$dir"
 }
 
-# --fzf-commit DIR -- apply and remember the final picker state
+# --fzf-commit DIR -- apply the final picker state (changes were already saved
+# as they were made, so they survive canceling too)
 --fzf-commit() {
   local dir=$1 base tool
   base=$(<"$dir/base")
@@ -306,7 +307,6 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     WTCODE_PICKED_TOOL=$tool
     --history-add "$tool"
   fi
-  --state-save scope="$(<"$dir/scope")" order="$(<"$dir/order")" base="$base" ${tool:+tool="$tool"}
 }
 
 # --fzf-cycle DIR KIND -- advance scope|order|base|tool to its next value
@@ -319,6 +319,7 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
   esac
   --next-in-cycle "$(<"$dir/$kind")" "${choices[@]}" > "$dir/$kind.new"
   mv "$dir/$kind.new" "$dir/$kind"
+  --state-save "$kind=$(<"$dir/$kind")"   # remembered right away, even if the picker is canceled
   [[ $kind == base ]] && --base-label "$(<"$dir/base")" > "$dir/base_label"
   return 0
 }

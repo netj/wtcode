@@ -296,6 +296,7 @@ test_fzf_cycle_and_state() {
   assert_eq "all recent default" "$(cat "$d/scope" "$d/order" "$d/base" | tr '\n' ' ' | sed 's/ $//')" "defaults" || return 1
   "$WTCODE" --fzf-cycle "$d" scope; "$WTCODE" --fzf-cycle "$d" scope
   assert_eq "local" "$(<"$d/scope")" "scope cycles all->worktree->local" || return 1
+  assert_contains "$(cat "$dir/state")" "scope=local" "a change is saved as soon as it's made (no commit needed)" || return 1
   "$WTCODE" --fzf-cycle "$d" base
   assert_eq "current" "$(<"$d/base")" "base cycles default->current" || return 1
   "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order
