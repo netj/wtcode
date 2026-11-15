@@ -258,13 +258,39 @@ test_list_scopes() {
 test_list_orders() {
   local dir=$1
   --picker-repo "$dir"
-  assert_eq "main origin/alpha wt1 zeta " "$(--names all name)" "name" || return 1
-  assert_eq "main wt1 zeta origin/alpha " "$(--names all type)" "type"
+  assert_eq "origin/alpha main wt1 zeta " "$(--names all name)" "by name alone: alpha < main" || return 1
+  assert_eq "main origin/alpha wt1 zeta " "$(--names all full)" "by remote/name" || return 1
+  # remote part is muted as a prefix by default, and as a suffix when sorting by name
+  local shown
+  shown=$("$WTCODE" --list-branches remote recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$shown" "origin/alpha" "remote/ prefix" || return 1
+  shown=$("$WTCODE" --list-branches remote name | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$shown" "alpha (origin)" "name (remote) suffix"
+}
+
+test_base_labels_and_header() {
+  local dir=$1 d
+  --picker-repo "$dir"; git remote set-head origin main >/dev/null
+  assert_eq "origin/main (default)" "$("$WTCODE" --base-label default)" "default is origin/HEAD, named exactly" || return 1
+  assert_eq "main (current)" "$("$WTCODE" --base-label current)" "current branch" || return 1
+  assert_eq "default current" "$("$WTCODE" --base-modes | tr '\n' ' ' | sed 's/ $//')" "origin/HEAD isn't offered twice" || return 1
+  assert_eq "side/x (default)" "$(WTCODE_BASE_REF=side/x "$WTCODE" --base-label default)" "explicit base" || return 1
+  d=$("$WTCODE" --fzf-init)
+  # ^r only shows up when making a new branch: scope none, or nothing matches
+  assert_contains "$("$WTCODE" --fzf-header "$d")" "Select a worktree/branch" "select hint when browsing" || return 1
+  [[ $("$WTCODE" --fzf-header "$d") != *"^r"* ]] || { echo "  ^r shown while browsing" >&2; return 1; }
+  assert_contains "$(FZF_MATCH_COUNT=0 "$WTCODE" --fzf-header "$d")" "^r new branch from: origin/main (default)" "^r when nothing matches" || return 1
+  echo none > "$d/scope"
+  assert_contains "$("$WTCODE" --fzf-header "$d")" "^r new branch from: origin/main (default)" "^r for scope none" || return 1
+  [[ $("$WTCODE" --fzf-header "$d") != *"Select a worktree"* ]] || { echo "  select hint shown for scope none" >&2; return 1; }
+  "$WTCODE" --fzf-cycle "$d" base
+  assert_contains "$("$WTCODE" --fzf-header "$d")" "^r new branch from: main (current)" "label follows ^r"
 }
 
 test_fzf_cycle_and_state() {
   local dir=$1 d
   export WTCODE_STATE_FILE=$dir/state
+  --picker-repo "$dir"; git remote set-head origin main >/dev/null   # so a "current" base is distinct
   d=$("$WTCODE" --fzf-init)
   assert_eq "all recent default" "$(cat "$d/scope" "$d/order" "$d/base" | tr '\n' ' ' | sed 's/ $//')" "defaults" || return 1
   "$WTCODE" --fzf-cycle "$d" scope; "$WTCODE" --fzf-cycle "$d" scope
@@ -519,6 +545,7 @@ ALL_TESTS=(
   test_slash_in_new_branch_name
   test_list_scopes
   test_list_orders
+  test_base_labels_and_header
   test_fzf_cycle_and_state
   test_history_and_tool_picker_state
   test_tmux_version_gate
