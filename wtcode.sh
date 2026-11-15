@@ -78,7 +78,6 @@ Interactive picker keys (when BRANCH is omitted):
   ctrl-s     scope: all, worktree, local, remote
   ctrl-o     order: recent, name (remote shown as a suffix), remote/name
   ctrl-r     base for a new branch: the default, or the current branch
-             (shown when making a new branch: new-branch mode or nothing matches)
   ctrl-t     tool: nested picker of installed tools and recent commands;
              type a new command/args to launch it (unless CMD was given)
   tab        new-branch mode: Enter creates a branch named after what you typed
@@ -373,16 +372,20 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   if [[ -n ${TMUX:-} ]] && type tmux &>/dev/null && --tmux-at-least 3 3; then
     local self cmd envs=() v
     self=$(--self)
-    printf -v cmd '%q %q --fzf-run %q > %q && : > %q' "$BASH" "$self" "$dir" "$dir/out" "$dir/done"
+    # started marks that the popup really ran: if it was then dismissed (Esc on
+    # the popup, client detached, ...) that's a cancel, NOT a reason to fall
+    # back to showing a second, different picker
+    printf -v cmd ': > %q; %q %q --fzf-run %q > %q' "$dir/started" "$BASH" "$self" "$dir" "$dir/out"
     : > "$dir/in_popup"
     # a popup doesn't inherit our environment; pass along what matters
     for v in $(compgen -e); do
       [[ $v =~ ^(PATH|HOME|SHELL|USER|LOGNAME|TMPDIR|LANG|LC_[A-Z]+|XDG_[A-Z_]+|WTCODE_[A-Z_]+|GIT_[A-Z_]+|FZF_[A-Z_]+)$ ]] &&
         envs+=(-e "$v=${!v}")
     done
-    if tmux display-popup -E ${TMUX_PANE:+-t "$TMUX_PANE"} -d "$PWD" -w 90% -h 70% -b rounded \
-         -T ' wtcode ' ${envs[@]+"${envs[@]}"} "$cmd" 2>/dev/null && [[ -e $dir/done ]]; then
-      cat "$dir/out"
+    tmux display-popup -E ${TMUX_PANE:+-t "$TMUX_PANE"} -d "$PWD" -w 90% -h 70% -b rounded \
+         -T ' wtcode ' ${envs[@]+"${envs[@]}"} "$cmd" 2>/dev/null || true
+    if [[ -e $dir/started ]]; then
+      cat "$dir/out" 2>/dev/null || true   # (empty when dismissed or canceled)
       return 0
     fi
     rm -f "$dir/in_popup"   # no client to show a popup on, etc.: fall back
@@ -409,11 +412,11 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       --header "$(--fzf-header "$dir")" \
       --bind "ctrl-s:execute-silent($b --fzf-cycle $dir_q scope)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
-      --bind "ctrl-r:execute-silent($b --fzf-cycle $dir_q base)+transform-header($b --fzf-header $dir_q force-base)" \
+      --bind "ctrl-r:execute-silent($b --fzf-cycle $dir_q base)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-l:execute-silent(: > $dir_q/updating)+transform-header($b --fzf-header $dir_q)+reload($b --fzf-update $dir_q)" \
       --bind "tab:execute-silent($b --fzf-cycle $dir_q new)+transform-header($b --fzf-header $dir_q)" \
       --bind "alt-enter:execute-silent(echo on > $dir_q/new)+accept" \
-      --bind "result:transform-header($b --fzf-header $dir_q)" \
+      --bind "load:transform-header($b --fzf-header $dir_q)" \
       ${opts[@]+"${opts[@]}"} \
       --prompt "$prompt" || true
 }
@@ -426,27 +429,20 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   --fzf-list "$1"
 }
 
-# --fzf-header DIR [force-base]
-# ^r (base of the new branch) only matters when a *new* branch is about to be
-# made: new-branch mode, or nothing matches (fzf tells us via $FZF_MATCH_COUNT); ^r
-# itself reveals it. the current values are bold (fzf --ansi styles headers)
+# --fzf-header DIR -- the current values are bold (fzf --ansi styles headers)
 --fzf-header() {
-  local dir=$1 scope order tool new line b=$'\e[1m' r=$'\e[0m'
-  scope=$(<"$dir/scope") new=$(<"$dir/new")
+  local dir=$1 scope order tool update b=$'\e[1m' r=$'\e[0m'
+  scope=$(<"$dir/scope")
   case $(<"$dir/order") in full) order=remote/name ;; *) order=$(<"$dir/order") ;; esac
   if [[ -r $dir/tool_fixed ]]; then tool="tool: $b$(<"$dir/tool_fixed")$r (given)"; else tool="^t tool: $b$(<"$dir/tool")$r"; fi
-  line="$tool   tab new branch: $b$new$r"
-  if [[ $new == on || ${2-} == force-base || ${FZF_MATCH_COUNT-} == 0 ]]; then
-    line+="   ^r from: $b$(<"$dir/base_label")$r"
-  fi
-  if [[ $new == on ]]; then
-    echo 'Enter creates a new branch named after what you typed; listed names may clash.'
-  elif [[ ${FZF_MATCH_COUNT-} != 0 ]]; then
-    echo 'Enter selects a worktree/branch; alt-enter creates a new one named after what you typed (so does :name:).'
-  fi
-  echo "$line"
-  local update='^l update remotes'
+  update='^l update remotes'
   [[ ! -e $dir/updating ]] || update="^l ${b}updating remotes...$r"   # inline: the rest of the header stays
+  if [[ $(<"$dir/new") == on ]]; then
+    echo 'New-branch mode (tab to leave): Enter creates a branch named after what you typed; listed names may clash.'
+  else
+    echo 'Enter: select, or create if nothing matches   tab: new-branch mode   alt-enter: create from what you typed'
+  fi
+  echo "$tool   ^r new branch from: $b$(<"$dir/base_label")$r"
   echo "^s scope: $b$scope$r   ^o order: $b$order$r   $update"
 }
 

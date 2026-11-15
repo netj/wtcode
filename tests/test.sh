@@ -277,19 +277,18 @@ test_base_labels_and_header() {
   assert_eq "default current" "$("$WTCODE" --base-modes | tr '\n' ' ' | sed 's/ $//')" "origin/HEAD isn't offered twice" || return 1
   assert_eq "side/x (default)" "$(WTCODE_BASE_REF=side/x "$WTCODE" --base-label default)" "explicit base" || return 1
   d=$("$WTCODE" --fzf-init)
-  # ^r only shows up when making a new branch: scope none, or nothing matches
-  assert_contains "$(--header "$d")" "alt-enter creates a new one" "select hint when browsing" || return 1
-  [[ $(--header "$d") != *"^r"* ]] || { echo "  ^r shown while browsing" >&2; return 1; }
-  assert_contains "$(FZF_MATCH_COUNT=0 --header "$d")" "^r from: origin/main (default)" "^r when nothing matches" || return 1
+  # ^r is always shown; tab/alt-enter are hinted, and the hint follows the mode
+  assert_contains "$(--header "$d")" "^r new branch from: origin/main (default)" "^r always visible" || return 1
+  assert_contains "$(--header "$d")" "alt-enter: create from what you typed" "hint when browsing" || return 1
   : > "$d/updating"   # ^l pressed: only that spot changes, the rest of the header stays
   assert_contains "$(--header "$d")" "^l updating remotes..." "inline update indicator" || return 1
   assert_contains "$(--header "$d")" "^s scope: all" "rest of the header stays while updating" || return 1
   rm "$d/updating"
   "$WTCODE" --fzf-cycle "$d" new   # tab
-  assert_contains "$(--header "$d")" "^r from: origin/main (default)" "^r in new-branch mode" || return 1
-  [[ $(--header "$d") != *"alt-enter creates"* ]] || { echo "  select hint shown in new-branch mode" >&2; return 1; }
+  assert_contains "$(--header "$d")" "New-branch mode (tab to leave)" "hint in new-branch mode" || return 1
+  assert_contains "$(--header "$d")" "^r new branch from: origin/main (default)" "^r still visible in new-branch mode" || return 1
   "$WTCODE" --fzf-cycle "$d" base
-  assert_contains "$(--header "$d")" "^r from: main (current)" "label follows ^r"
+  assert_contains "$(--header "$d")" "^r new branch from: main (current)" "label follows ^r"
 }
 
 test_fzf_cycle_and_state() {
