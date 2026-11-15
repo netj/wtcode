@@ -457,7 +457,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   # NOTE: git branch --format uses ref-filter syntax which doesn't support
   # pretty-format's %<(N,trunc) truncation. Using bash to handle truncation,
   # alignment, and coloring instead.
-  local c_reset=$'\e[0m' c_green=$'\e[32m' c_cyan=$'\e[36m' c_blue=$'\e[34m' c_yellow=$'\e[33m' c_dim=$'\e[2m'
+  local c_reset=$'\e[0m' c_green=$'\e[32m' c_cyan=$'\e[36m' c_blue=$'\e[34m' c_yellow=$'\e[33m' c_muted=$'\e[2;90m'   # dim gray: the remote/ part and worktree paths
   local c_red=$'\e[31m' local_branches sort_args
   local_branches=$(git branch --format='%(refname:lstrip=2)')
   # the two places worktrees are expected: the main checkout, and the root
@@ -529,7 +529,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     printf -v pad '%*s' "$padw" ''
     printf -v date '%14s' "$date"
     # build display fields with colors embedded
-    name_shown="${c_dim}${pre}${c_reset}${c}${nm}${c_reset}${c_dim}${suf}${c_reset}${pad}"
+    name_shown="${c_muted}${pre}${c_reset}${c}${nm}${c_reset}${c_muted}${suf}${c_reset}${pad}"
     date_shown="${c_blue}${date}${c_reset}"
     hash_shown="${c_yellow}${hash}${c_reset}"
     if [[ -n $upstream ]]; then upstream_shown="${c_red}${upstream}${c_reset} "; else upstream_shown=''; fi
