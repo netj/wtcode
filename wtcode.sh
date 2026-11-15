@@ -51,7 +51,7 @@ ${WTCODE_DEBUG:+set -x}
     sed 's|^[-/]*||; s|[-/]*$||'   # trim leading/trailing hyphens/slashes
 }
 
-WTCODE_VERSION=0.6.0
+WTCODE_VERSION=0.7.0
 --version() { echo "wtcode $WTCODE_VERSION"; }
 --help() {
   cat <<USAGE
