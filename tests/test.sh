@@ -277,16 +277,13 @@ test_base_labels_and_header() {
   assert_eq "default current" "$("$WTCODE" --base-modes | tr '\n' ' ' | sed 's/ $//')" "origin/HEAD isn't offered twice" || return 1
   assert_eq "side/x (default)" "$(WTCODE_BASE_REF=side/x "$WTCODE" --base-label default)" "explicit base" || return 1
   d=$("$WTCODE" --fzf-init)
-  # ^r is always shown; tab/alt-enter are hinted, and the hint follows the mode
+  # ^r is always shown, and alt-enter is hinted
   assert_contains "$(--header "$d")" "^r new branch from: origin/main (default)" "^r always visible" || return 1
   assert_contains "$(--header "$d")" "alt-enter: create from what you typed" "hint when browsing" || return 1
   : > "$d/updating"   # ^l pressed: only that spot changes, the rest of the header stays
   assert_contains "$(--header "$d")" "^l updating remotes..." "inline update indicator" || return 1
   assert_contains "$(--header "$d")" "^s scope: all" "rest of the header stays while updating" || return 1
   rm "$d/updating"
-  "$WTCODE" --fzf-cycle "$d" new   # tab
-  assert_contains "$(--header "$d")" "New-branch mode (tab to leave)" "hint in new-branch mode" || return 1
-  assert_contains "$(--header "$d")" "^r new branch from: origin/main (default)" "^r still visible in new-branch mode" || return 1
   "$WTCODE" --fzf-cycle "$d" base
   assert_contains "$(--header "$d")" "^r new branch from: main (current)" "label follows ^r"
 }
@@ -333,7 +330,7 @@ test_tmux_version_gate() {
   done
 }
 
-# a stand-in for fzf: drains the list, optionally flips new-branch mode like the key would,
+# a stand-in for fzf: drains the list, optionally acts like alt-enter was pressed,
 # then prints what fzf --print-query would: the query, then the selection
 --fake-fzf() {
   local bin=$1/bin; mkdir -p "$bin"
@@ -341,25 +338,25 @@ test_tmux_version_gate() {
 #!/usr/bin/env bash
 cat >/dev/null
 dir=$(printf '%s\n' "$@" | grep -o -m1 'fzf-cycle [^ ]*' | head -1 | cut -d' ' -f2)
-[[ -z ${STUB_NEW-} ]] || "$WTCODE" --fzf-cycle "$dir" new
+[[ -z ${STUB_ALT_ENTER-} ]] || : > "$dir/force_new"
 printf '%s\n' "$STUB_QUERY"
 [[ -z ${STUB_PICK-} ]] || printf '%s\tx\ty\n' "$STUB_PICK"
 STUB
   chmod +x "$bin/fzf"
 }
 
-test_new_branch_mode_ignores_selection() {
+test_alt_enter_creates_typed_name() {
   local dir=$1 out
   git branch zeta
   --fake-fzf "$dir"
-  out=$(PATH="$dir/bin:$PATH" STUB_NEW=1 STUB_QUERY=fresh STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
-  assert_eq "$GIT_WORKTREE_ROOT/fresh" "$out" "new-branch mode: Enter creates the typed name even with a highlighted match" || return 1
+  out=$(PATH="$dir/bin:$PATH" STUB_ALT_ENTER=1 STUB_QUERY=fresh STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/fresh" "$out" "alt-enter creates the typed name even with a highlighted match" || return 1
   assert_eq "fresh" "$(git -C "$GIT_WORKTREE_ROOT/fresh" branch --show-current)" || return 1
-  # a typed name matching an existing branch is still created fresh in new-branch mode
-  out=$(PATH="$dir/bin:$PATH" STUB_NEW=1 STUB_QUERY=zeta-2 STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
-  assert_eq "$GIT_WORKTREE_ROOT/zeta-2" "$out" "new-branch mode: new name" || return 1
+  # a typed name matching an existing branch is still created fresh with alt-enter
+  out=$(PATH="$dir/bin:$PATH" STUB_ALT_ENTER=1 STUB_QUERY=zeta-2 STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/zeta-2" "$out" "alt-enter: new name" || return 1
   out=$(PATH="$dir/bin:$PATH" STUB_QUERY=zet STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
-  assert_eq "$GIT_WORKTREE_ROOT/zeta" "$out" "without new-branch mode the selection wins over the query"
+  assert_eq "$GIT_WORKTREE_ROOT/zeta" "$out" "without alt-enter the selection wins over the query"
 }
 
 test_state_untouched_by_noninteractive_runs() {
@@ -582,7 +579,7 @@ ALL_TESTS=(
   test_fzf_cycle_and_state
   test_history_and_tool_picker_state
   test_tmux_version_gate
-  test_new_branch_mode_ignores_selection
+  test_alt_enter_creates_typed_name
   test_state_untouched_by_noninteractive_runs
   test_base_ref_env_and_flag
   test_provisions_claude_settings_symlinks

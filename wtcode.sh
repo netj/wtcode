@@ -80,9 +80,8 @@ Interactive picker keys (when BRANCH is omitted):
   ctrl-r     base for a new branch: the default, or the current branch
   ctrl-t     tool: nested picker of installed tools and recent commands;
              type a new command/args to launch it (unless CMD was given)
-  tab        new-branch mode: Enter creates a branch named after what you typed
-             (never the highlighted one); the list shows names that may clash
-  alt-enter  create a new branch named after what you typed, right now
+  alt-enter  create a new branch named after what you typed (never the
+             highlighted one); plain Enter does that too when nothing matches
   ctrl-l     git remote update, then reload
   The last used values are remembered for next time.
 
@@ -169,8 +168,7 @@ WTCODE_CMDS_TO_TRY=(
 ###############################################################################
 # The fzf picker lets you cycle some options with key bindings:
 #   ctrl-s scope   ctrl-o order   ctrl-r base ref   ctrl-l update
-#   tab    new-branch mode: Enter makes a new branch named after what you typed
-#   alt-enter  create a new branch named after what you typed, right now
+#   alt-enter  create a new branch named after what you typed, not the highlighted one
 #   ctrl-t tool: opens a nested picker of installed tools and recently
 #           launched commands; type anything to launch a new command/args
 # The current values live in small files under a temp dir ($1 of the --fzf-*
@@ -286,7 +284,6 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     --pick-valid "$(--state-get base)" default $(--base-modes) > "$dir/base"
   fi
   --base-label "$(<"$dir/base")" > "$dir/base_label"
-  echo off > "$dir/new"   # tab: new-branch mode; deliberately not remembered
   if [[ -n ${WTCODE_TOOL_FIXED-} ]]; then
     echo "$WTCODE_TOOL_FIXED" > "$dir/tool_fixed"
   else
@@ -319,7 +316,6 @@ WTCODE_ORDERS=(recent name full)   # full: sort by remote/name, name: by name al
     scope) choices=("${WTCODE_SCOPES[@]}") ;;
     order) choices=("${WTCODE_ORDERS[@]}") ;;
     base)  choices=($(--base-modes)) ;;
-    new)   choices=(off on) ;;
   esac
   --next-in-cycle "$(<"$dir/$kind")" "${choices[@]}" > "$dir/$kind.new"
   mv "$dir/$kind.new" "$dir/$kind"
@@ -414,8 +410,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       --bind "ctrl-o:execute-silent($b --fzf-cycle $dir_q order)+reload($b --fzf-list $dir_q)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-r:execute-silent($b --fzf-cycle $dir_q base)+transform-header($b --fzf-header $dir_q)" \
       --bind "ctrl-l:execute-silent(: > $dir_q/updating)+transform-header($b --fzf-header $dir_q)+reload($b --fzf-update $dir_q)" \
-      --bind "tab:execute-silent($b --fzf-cycle $dir_q new)+transform-header($b --fzf-header $dir_q)" \
-      --bind "alt-enter:execute-silent(echo on > $dir_q/new)+accept" \
+      --bind "alt-enter:execute-silent(: > $dir_q/force_new)+accept" \
       --bind "load:transform-header($b --fzf-header $dir_q)" \
       ${opts[@]+"${opts[@]}"} \
       --prompt "$prompt" || true
@@ -437,11 +432,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   if [[ -r $dir/tool_fixed ]]; then tool="tool: $b$(<"$dir/tool_fixed")$r (given)"; else tool="^t tool: $b$(<"$dir/tool")$r"; fi
   update='^l update remotes'
   [[ ! -e $dir/updating ]] || update="^l ${b}updating remotes...$r"   # inline: the rest of the header stays
-  if [[ $(<"$dir/new") == on ]]; then
-    echo 'New-branch mode (tab to leave): Enter creates a branch named after what you typed; listed names may clash.'
-  else
-    echo 'Enter: select, or create if nothing matches   tab: new-branch mode   alt-enter: create from what you typed'
-  fi
+  echo 'Enter: select, or create if nothing matches   alt-enter: create from what you typed'
   echo "$tool   ^r new branch from: $b$(<"$dir/base_label")$r"
   echo "^s scope: $b$scope$r   ^o order: $b$order$r   $update"
 }
@@ -534,8 +525,8 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     # fzf prints the typed query, then the selection (if any)
     local picked
     picked=$(--fzf-pick "$fzf_dir")
-    if [[ $(<"$fzf_dir/new") == on ]]; then
-      # new-branch mode (tab or alt-enter): the typed text is a new name, never an existing ref
+    if [[ -e $fzf_dir/force_new ]]; then
+      # alt-enter: the typed text is a new name, never an existing ref
       branch_name=$(head -1 <<< "$picked")
       [[ -n $branch_name ]] && branch_name=:$branch_name
     else
