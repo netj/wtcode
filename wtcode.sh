@@ -420,7 +420,9 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
 --fzf-header() {
   local dir=$1 scope tool key=
   scope=$(<"$dir/scope")
-  if [[ -r $dir/tool_fixed ]]; then tool="tool: $(<"$dir/tool_fixed") (given)"; else tool="^t tool: $(<"$dir/tool")"; fi
+  # (bold magenta so what will launch stands out; fzf --ansi colors headers too)
+  local on=$'\e[1;35m' off=$'\e[0m'
+  if [[ -r $dir/tool_fixed ]]; then tool="${on}tool: $(<"$dir/tool_fixed") (given)${off}"; else tool="${on}^t tool: $(<"$dir/tool")${off}"; fi
   if [[ $scope == none || ${2-} == force-base || ${FZF_MATCH_COUNT-} == 0 ]]; then
     echo "$tool   ^r new branch from: $(<"$dir/base_label")"
   else
