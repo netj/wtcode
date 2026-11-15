@@ -5,7 +5,8 @@
 set -uo pipefail
 
 WTCODE=$(cd "$(dirname "$0")/.." && pwd)/wtcode.sh
-unset WTCODE_DEBUG WTCODE_CMD GIT_WORKTREE_ROOT 2>/dev/null || true
+export WTCODE   # (the fake fzf stub calls back into it)
+unset WTCODE_DEBUG WTCODE_CMD WTCODE_TOOL GIT_WORKTREE_ROOT 2>/dev/null || true
 # tests must never send-keys into whatever pane/tab/window happens to be
 # "current" -- force the exec-directly path regardless of the environment
 # tests run in. Unsetting TMUX alone is NOT enough: --terminal-send-keys
@@ -17,6 +18,10 @@ unset WTCODE_DEBUG WTCODE_CMD GIT_WORKTREE_ROOT 2>/dev/null || true
 # unrelated tmux session.
 unset TMUX TMUX_PANE TERM_PROGRAM TERMINAL_EMULATOR 2>/dev/null || true
 export WTCODE_TERMINAL_MODE=exec WTCODE_TMUX_MODE=exec
+# the picker remembers its last state on disk; tests must not touch the real
+# one (individual tests opt in by pointing this at a temp file)
+export WTCODE_STATE_FILE=
+unset WTCODE_BASE_REF WTCODE_BRANCH_SCOPE WTCODE_BRANCH_ORDER 2>/dev/null || true
 
 pass=0; fail=0; failures=()
 
@@ -227,6 +232,248 @@ test_slash_in_new_branch_name() {
 }
 
 ###############################################################################
+# tests for interactive picker support (scope/order/base/state)
+###############################################################################
+
+--picker-repo() {
+  git branch zeta
+  git worktree add -q "$GIT_WORKTREE_ROOT/wt1" -b wt1
+  git init -q --bare "$1/remote.git"
+  git remote add origin "$1/remote.git"
+  git branch alpha && git push -q origin main alpha && git branch -q -D alpha
+  git fetch -q origin
+}
+
+--header() { "$WTCODE" --fzf-header "$1" | sed $'s/\x1b\\[[0-9;]*m//g'; }   # without bold escapes
+--names() { "$WTCODE" --list-branches "$@" | cut -f1 | tr '\n' ' '; }
+
+test_list_scopes() {
+  local dir=$1
+  --picker-repo "$dir"
+  assert_eq "main wt1 zeta origin/alpha " "$(--names all)" "all" || return 1
+  assert_eq "main wt1 " "$(--names worktree)" "worktree" || return 1
+  assert_eq "main wt1 zeta " "$(--names local)" "local" || return 1
+  assert_eq "origin/alpha " "$(--names remote)" "remote"
+}
+
+test_list_orders() {
+  local dir=$1
+  --picker-repo "$dir"
+  assert_eq "origin/alpha main wt1 zeta " "$(--names all name)" "by name alone: alpha < main" || return 1
+  assert_eq "main origin/alpha wt1 zeta " "$(--names all full)" "by remote/name" || return 1
+  # remote part is muted as a prefix by default, and as a suffix when sorting by name
+  local shown
+  shown=$("$WTCODE" --list-branches remote recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$shown" "origin/alpha" "remote/ prefix" || return 1
+  shown=$("$WTCODE" --list-branches remote name | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$shown" "alpha (origin)" "name (remote) suffix"
+}
+
+test_unexpected_worktree_dir_shown_and_searchable() {
+  local dir=$1 plain='s/\x1b\[[0-9;]*m//g' out
+  git worktree add -q "$GIT_WORKTREE_ROOT/old-dir" -b feat
+  git worktree add -q "$GIT_WORKTREE_ROOT/same" -b same
+  git branch plain
+  out=$("$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$out" "feat" "branch" || return 1
+  assert_contains "$(grep '^[+ *] feat' <<< "$out")" "@ old-dir" "worktree dir shown on the same row (all)" || return 1
+  [[ $(grep '^[+ *] same' <<< "$out") != *"@"* ]] || { echo "  dir shown although equal to the branch name" >&2; return 1; }
+  [[ $(grep '^[+ *] plain' <<< "$out") != *"@"* ]] || { echo "  dir shown for a branch without a worktree" >&2; return 1; }
+  out=$("$WTCODE" --list-branches worktree recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  assert_contains "$out" "@ old-dir" "worktree scope shows it too" || return 1
+  out=$("$WTCODE" --list-branches local recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')
+  [[ $out != *"@ old-dir"* ]] || { echo "  dir shown in the local (branches only) scope" >&2; return 1; }
+  # a worktree outside both the main checkout and the root shows its (~-abbreviated) path
+  mkdir "$dir/ext"; git worktree add -q "$dir/ext/elsewhere" -b away
+  assert_contains "$("$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g' | grep '^[+ *] away')" "@ ~/ext/elsewhere" "path shown outside the usual places" || return 1
+  # the main checkout is recognized: nothing shown
+  [[ $(grep '^[+ *] main' <<< "$("$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g')") != *"@"* ]] || { echo "  dir shown for the main checkout" >&2; return 1; }
+  # selecting still returns the branch name, whatever matched
+  assert_eq "feat" "$("$WTCODE" --list-branches all recent | grep -a 'feat' | head -1 | cut -f1)" "row id stays the branch"
+}
+
+test_base_labels_and_header() {
+  local dir=$1 d
+  --picker-repo "$dir"; git remote set-head origin main >/dev/null
+  assert_eq "origin/main (default)" "$("$WTCODE" --base-label default)" "default is origin/HEAD, named exactly" || return 1
+  assert_eq "main (current)" "$("$WTCODE" --base-label current)" "current branch" || return 1
+  assert_eq "default current" "$("$WTCODE" --base-modes | tr '\n' ' ' | sed 's/ $//')" "origin/HEAD isn't offered twice" || return 1
+  assert_eq "side/x (default)" "$(WTCODE_BASE_REF=side/x "$WTCODE" --base-label default)" "explicit base" || return 1
+  d=$("$WTCODE" --fzf-init)
+  # ^r is always shown, and alt-enter is hinted
+  assert_contains "$(--header "$d")" "^r branch from: origin/main (default)" "^r always visible" || return 1
+  assert_contains "$(--header "$d")" "alt-enter: create new worktree" "alt-enter hint" || return 1
+  : > "$d/updating"   # ^l pressed: only that spot changes, the rest of the header stays
+  assert_contains "$(--header "$d")" "^l updating remotes..." "inline update indicator" || return 1
+  assert_contains "$(--header "$d")" "^s scope: all branches" "rest of the header stays while updating" || return 1
+  rm "$d/updating"
+  "$WTCODE" --fzf-cycle "$d" base
+  assert_contains "$(--header "$d")" "^r branch from: main (current)" "label follows ^r"
+}
+
+test_fzf_cycle_and_state() {
+  local dir=$1 d
+  export WTCODE_STATE_FILE=$dir/state
+  --picker-repo "$dir"; git remote set-head origin main >/dev/null   # so a "current" base is distinct
+  d=$("$WTCODE" --fzf-init)
+  assert_eq "all recent default" "$(cat "$d/scope" "$d/order" "$d/base" | tr '\n' ' ' | sed 's/ $//')" "defaults" || return 1
+  "$WTCODE" --fzf-cycle "$d" scope; "$WTCODE" --fzf-cycle "$d" scope
+  assert_eq "local" "$(<"$d/scope")" "scope cycles all->worktree->local" || return 1
+  assert_contains "$(cat "$dir/state")" "scope=local" "a change is saved as soon as it's made (no commit needed)" || return 1
+  "$WTCODE" --fzf-cycle "$d" base
+  assert_eq "current" "$(<"$d/base")" "base cycles default->current" || return 1
+  "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order
+  assert_eq "recent" "$(<"$d/order")" "order wraps around" || return 1
+  "$WTCODE" --fzf-cycle "$d" scope
+  # commit remembers; a fresh session starts from it, env vars win over it
+  "$WTCODE" --state-save scope=local base=current
+  d=$("$WTCODE" --fzf-init)
+  assert_eq "local current" "$(<"$d/scope") $(<"$d/base")" "remembered" || return 1
+  d=$(WTCODE_BRANCH_SCOPE=remote WTCODE_BASE_REF=origin/main "$WTCODE" --fzf-init)
+  assert_eq "remote default" "$(<"$d/scope") $(<"$d/base")" "env overrides remembered"
+}
+
+test_history_and_tool_picker_state() {
+  local dir=$1 d
+  export WTCODE_STATE_FILE=$dir/state
+  source <(sed -n '/^--history-file()/,/^}/p;/^--history-add()/,/^}/p' "$WTCODE")
+  --history-add "claude --resume"; --history-add "aider"; --history-add "claude --resume"
+  assert_eq "claude --resume aider" "$(tr '\n' ' ' < "$dir/state.cmds" | sed 's/ $//')" "MRU, deduped" || return 1
+  d=$(WTCODE_TOOL="vim -R" "$WTCODE" --fzf-init)
+  assert_eq "vim -R" "$(<"$d/tool")" "WTCODE_TOOL seeds the tool, args included"
+  d=$(WTCODE_CMD="vim -R" "$WTCODE" --fzf-init)
+  assert_eq "vim -R" "$(<"$d/tool")" "deprecated WTCODE_CMD still seeds the tool"
+}
+
+test_tmux_version_gate() {
+  local dir=$1 v
+  mkdir "$dir/bin"
+  for v in "3.8:0" "3.3a:0" "next-3.4:0" "3.2a:1" "2.9:1" "4.0:0"; do
+    printf '#!/bin/sh\necho "tmux %s"\n' "${v%:*}" > "$dir/bin/tmux"; chmod +x "$dir/bin/tmux"
+    local got=0
+    ( PATH="$dir/bin:$PATH"; source <(sed -n '/^--tmux-at-least()/,/^}/p' "$WTCODE"); --tmux-at-least 3 3 ) || got=1
+    assert_eq "${v#*:}" "$got" "tmux ${v%:*} supports popup env (-e)" || return 1
+  done
+}
+
+# a stand-in for fzf: drains the list, optionally acts like alt-enter was pressed,
+# then prints what fzf --print-query would: the query, then the selection
+--fake-fzf() {
+  local bin=$1/bin; mkdir -p "$bin"
+  cat > "$bin/fzf" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+dir=$(printf '%s\n' "$@" | grep -o -m1 'fzf-cycle [^ ]*' | head -1 | cut -d' ' -f2)
+[[ -z ${STUB_ALT_ENTER-} ]] || : > "$dir/force_new"
+printf '%s\n' "$STUB_QUERY"
+[[ -z ${STUB_PICK-} ]] || printf '%s\tx\ty\n' "$STUB_PICK"
+STUB
+  chmod +x "$bin/fzf"
+}
+
+test_alt_enter_creates_typed_name() {
+  local dir=$1 out
+  git branch zeta
+  --fake-fzf "$dir"
+  out=$(PATH="$dir/bin:$PATH" STUB_ALT_ENTER=1 STUB_QUERY=fresh STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/fresh" "$out" "alt-enter creates the typed name even with a highlighted match" || return 1
+  assert_eq "fresh" "$(git -C "$GIT_WORKTREE_ROOT/fresh" branch --show-current)" || return 1
+  # a typed name matching an existing branch is still created fresh with alt-enter
+  out=$(PATH="$dir/bin:$PATH" STUB_ALT_ENTER=1 STUB_QUERY=zeta-2 STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/zeta-2" "$out" "alt-enter: new name" || return 1
+  out=$(PATH="$dir/bin:$PATH" STUB_QUERY=zet STUB_PICK=zeta "$WTCODE" --exec pwd 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/zeta" "$out" "without alt-enter the selection wins over the query"
+}
+
+test_picked_tool_is_remembered_even_if_main_picker_is_canceled() {
+  local dir=$1 d
+  export WTCODE_STATE_FILE=$dir/state
+  --fake-fzf "$dir"
+  d=$("$WTCODE" --fzf-init)
+  # (an installed command, since a remembered tool must still exist to be the default)
+  # the nested picker returns just the typed text; nothing launches afterwards
+  PATH="$dir/bin:$PATH" STUB_QUERY="pwd -P" "$WTCODE" --fzf-pick-tool "$d"
+  assert_eq "pwd -P" "$(<"$d/tool")" "session value" || return 1
+  assert_contains "$(cat "$dir/state")" "tool=pwd -P" "saved to state without a commit" || return 1
+  assert_eq "pwd -P" "$(head -1 "$dir/state.cmds")" "and to the command history" || return 1
+  assert_eq "pwd -P" "$("$WTCODE" --fzf-init | { read -r x; <"$x/tool" cat; })" "next picker starts on it"
+}
+
+test_split_command() {
+  local dir=$1 got
+  source <(sed -n '/^--split-command()/,/^}/p' "$WTCODE")
+  got=$(--split-command "claude --append-system-prompt \"it's fine\" a\\ b 'x  y' \"\"" | tr '\0' '|')
+  assert_eq "claude|--append-system-prompt|it's fine|a b|x  y||" "$got" "quotes, escapes, empty arg" || return 1
+  assert_eq "" "$(--split-command "   " | tr '\0' '|')" "blank gives no words" || return 1
+  assert_eq "-n|foo|" "$(--split-command "-n foo" | tr '\0' '|')" "leading dash words"
+}
+
+test_blank_tool_falls_back_to_default() {
+  local dir=$1 bin out
+  bin=$(--fake-claude-bin)
+  out=$(PATH="$bin:$PATH" WTCODE_PICKED_TOOL=" " "$WTCODE" :blanktool 2>/dev/null | tail -1)
+  assert_eq "$GIT_WORKTREE_ROOT/blanktool" "$out" "a whitespace-only picked tool must not break the launch"
+}
+
+test_echo_hostile_tool_text_is_kept_verbatim() {
+  local dir=$1
+  export WTCODE_STATE_FILE=$dir/state
+  "$WTCODE" --history-add "-n foo"; "$WTCODE" --state-save "tool=-e"
+  assert_eq "-n foo" "$(head -1 "$dir/state.cmds")" "history keeps echo-looking text" || return 1
+  assert_contains "$(cat "$dir/state")" "tool=-e" "state keeps it too"
+}
+
+test_base_flag_is_not_exported_to_the_tool() {
+  local dir=$1
+  git branch side
+  assert_eq "unset" "$("$WTCODE" --base side :noleak sh -c 'echo ${WTCODE_BASE_REF-unset}' 2>/dev/null | tail -1)" \
+    "the picker's callbacks get the base explicitly; a launched tool must not inherit it"
+}
+
+test_explicit_sha_base_is_labeled_as_given() {
+  local dir=$1 sha
+  sha=$(git rev-parse HEAD)
+  assert_eq "$sha (default)" "$(WTCODE_BASE_REF=$sha "$WTCODE" --base-label default)" "an explicit sha is not mistaken for the HEAD fallback"
+}
+
+test_cycling_scope_clears_the_updating_marker() {
+  local dir=$1 d
+  d=$("$WTCODE" --fzf-init); : > "$d/updating"
+  "$WTCODE" --fzf-cycle "$d" base;  [[ -e $d/updating ]] || { echo "  ^r cleared it" >&2; return 1; }
+  "$WTCODE" --fzf-cycle "$d" scope; [[ ! -e $d/updating ]] || { echo "  scope reload left the marker" >&2; return 1; }
+}
+
+test_worktree_root_is_compared_canonically() {
+  local dir=$1 out
+  git worktree add -q "$GIT_WORKTREE_ROOT/feat" -b feat
+  ln -s "$GIT_WORKTREE_ROOT" "$dir/lnk"
+  for root in "$GIT_WORKTREE_ROOT/" "$dir/lnk"; do
+    out=$(GIT_WORKTREE_ROOT=$root "$WTCODE" --list-branches all recent | cut -f2 | sed $'s/\x1b\\[[0-9;]*m//g' | grep '^[+ *] feat')
+    [[ $out != *"@"* ]] || { echo "  root '$root' not recognized: $out" >&2; return 1; }
+  done
+}
+
+test_state_untouched_by_noninteractive_runs() {
+  local dir=$1
+  export WTCODE_STATE_FILE=$dir/state
+  "$WTCODE" :foo pwd >/dev/null 2>&1
+  [[ ! -e $dir/state ]] || { echo "  state file written by a non-interactive run" >&2; return 1; }
+}
+
+test_base_ref_env_and_flag() {
+  local dir=$1
+  git checkout -q -b side && git commit -q --allow-empty -m side-only && git checkout -q main
+  WTCODE_BASE_REF=side "$WTCODE" :fromenv true >/dev/null 2>&1
+  assert_eq "side-only" "$(git log -1 --format=%s fromenv)" "WTCODE_BASE_REF" || return 1
+  "$WTCODE" --base side :fromflag true >/dev/null 2>&1
+  assert_eq "side-only" "$(git log -1 --format=%s fromflag)" "--base REF" || return 1
+  "$WTCODE" --base=side :fromflag2 true >/dev/null 2>&1
+  assert_eq "side-only" "$(git log -1 --format=%s fromflag2)" "--base=REF" || return 1
+  "$WTCODE" :fromdefault true >/dev/null 2>&1
+  assert_eq "initial" "$(git log -1 --format=%s fromdefault)" "unchanged default"
+}
+
+###############################################################################
 # tests for .claude/settings.json symlinking (provisioning only for claude)
 ###############################################################################
 
@@ -420,6 +667,24 @@ ALL_TESTS=(
   test_new_branch_default
   test_existing_branch_not_checked_out_anywhere
   test_slash_in_new_branch_name
+  test_list_scopes
+  test_list_orders
+  test_unexpected_worktree_dir_shown_and_searchable
+  test_base_labels_and_header
+  test_fzf_cycle_and_state
+  test_history_and_tool_picker_state
+  test_tmux_version_gate
+  test_alt_enter_creates_typed_name
+  test_picked_tool_is_remembered_even_if_main_picker_is_canceled
+  test_split_command
+  test_blank_tool_falls_back_to_default
+  test_echo_hostile_tool_text_is_kept_verbatim
+  test_base_flag_is_not_exported_to_the_tool
+  test_explicit_sha_base_is_labeled_as_given
+  test_cycling_scope_clears_the_updating_marker
+  test_worktree_root_is_compared_canonically
+  test_state_untouched_by_noninteractive_runs
+  test_base_ref_env_and_flag
   test_provisions_claude_settings_symlinks
   test_provisions_claude_settings_skips_existing_file
   test_provisions_claude_gitignore_when_needed
