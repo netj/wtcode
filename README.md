@@ -65,6 +65,10 @@ WTCODE_CMD=cursor wtcode feature  # use cursor as default tool
 |---|---|
 | `WTCODE_CMD` | Default tool to launch (e.g., `claude`, `lazygit`, `vim`, `cursor`) |
 | `WTCODE_USE_CURRENT_BRANCH` | When creating a brand-new branch, fork it from the current HEAD instead of the default: `origin/HEAD` (falling back to `origin/main`, then `origin/master`) |
+| `WTCODE_BASE_REF` | Fork brand-new branches from this ref (also `wtcode --base REF`) |
+| `WTCODE_BRANCH_SCOPE` | Initial picker scope: `all`, `none`, `worktree`, `local`, `remote` |
+| `WTCODE_BRANCH_ORDER` | Initial picker order: `recent`, `name`, `type` |
+| `WTCODE_STATE_FILE` | Where the picker remembers its last state (default `$XDG_STATE_HOME/wtcode/state`; empty disables) |
 | `WTCODE_DEBUG` | Enable debug tracing when set to any value |
 | `GIT_WORKTREE_ROOT` | Override the directory where worktrees are created |
 

@@ -17,6 +17,10 @@ unset WTCODE_DEBUG WTCODE_CMD GIT_WORKTREE_ROOT 2>/dev/null || true
 # unrelated tmux session.
 unset TMUX TMUX_PANE TERM_PROGRAM TERMINAL_EMULATOR 2>/dev/null || true
 export WTCODE_TERMINAL_MODE=exec WTCODE_TMUX_MODE=exec
+# the picker remembers its last state on disk; tests must not touch the real
+# one (individual tests opt in by pointing this at a temp file)
+export WTCODE_STATE_FILE=
+unset WTCODE_BASE_REF WTCODE_BRANCH_SCOPE WTCODE_BRANCH_ORDER 2>/dev/null || true
 
 pass=0; fail=0; failures=()
 
@@ -227,6 +231,88 @@ test_slash_in_new_branch_name() {
 }
 
 ###############################################################################
+# tests for interactive picker support (scope/order/base/state)
+###############################################################################
+
+--picker-repo() {
+  git branch zeta
+  git worktree add -q "$GIT_WORKTREE_ROOT/wt1" -b wt1
+  git init -q --bare "$1/remote.git"
+  git remote add origin "$1/remote.git"
+  git branch alpha && git push -q origin main alpha && git branch -q -D alpha
+  git fetch -q origin
+}
+
+--names() { "$WTCODE" --list-branches "$@" | cut -f1 | tr '\n' ' '; }
+
+test_list_scopes() {
+  local dir=$1
+  --picker-repo "$dir"
+  assert_eq "main wt1 zeta origin/alpha " "$(--names all)" "all" || return 1
+  assert_eq "" "$(--names none)" "none" || return 1
+  assert_eq "main wt1 " "$(--names worktree)" "worktree" || return 1
+  assert_eq "main wt1 zeta " "$(--names local)" "local" || return 1
+  assert_eq "origin/alpha " "$(--names remote)" "remote"
+}
+
+test_list_orders() {
+  local dir=$1
+  --picker-repo "$dir"
+  assert_eq "main origin/alpha wt1 zeta " "$(--names all name)" "name" || return 1
+  assert_eq "main wt1 zeta origin/alpha " "$(--names all type)" "type"
+}
+
+test_fzf_cycle_and_state() {
+  local dir=$1 d
+  export WTCODE_STATE_FILE=$dir/state
+  d=$("$WTCODE" --fzf-init)
+  assert_eq "all recent default" "$(cat "$d/scope" "$d/order" "$d/base" | tr '\n' ' ' | sed 's/ $//')" "defaults" || return 1
+  "$WTCODE" --fzf-cycle "$d" scope; "$WTCODE" --fzf-cycle "$d" scope
+  assert_eq "worktree" "$(<"$d/scope")" "scope cycles all->none->worktree" || return 1
+  "$WTCODE" --fzf-cycle "$d" base
+  assert_eq "current" "$(<"$d/base")" "base cycles default->current" || return 1
+  "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order; "$WTCODE" --fzf-cycle "$d" order
+  assert_eq "recent" "$(<"$d/order")" "order wraps around" || return 1
+  "$WTCODE" --fzf-cycle "$d" scope
+  # commit remembers; a fresh session starts from it, env vars win over it
+  "$WTCODE" --state-save scope=local base=current
+  d=$("$WTCODE" --fzf-init)
+  assert_eq "local current" "$(<"$d/scope") $(<"$d/base")" "remembered" || return 1
+  d=$(WTCODE_BRANCH_SCOPE=remote WTCODE_BASE_REF=origin/main "$WTCODE" --fzf-init)
+  assert_eq "remote default" "$(<"$d/scope") $(<"$d/base")" "env overrides remembered"
+}
+
+test_history_and_tool_picker_state() {
+  local dir=$1 d
+  export WTCODE_STATE_FILE=$dir/state
+  source <(sed -n '/^--history-file()/,/^}/p;/^--history-add()/,/^}/p' "$WTCODE")
+  --history-add "claude --resume"; --history-add "aider"; --history-add "claude --resume"
+  assert_eq "claude --resume aider" "$(tr '\n' ' ' < "$dir/state.cmds" | sed 's/ $//')" "MRU, deduped" || return 1
+  d=$(WTCODE_CMD="vim -R" "$WTCODE" --fzf-init)
+  assert_eq "vim -R" "$(<"$d/tool")" "WTCODE_CMD seeds the tool, args included"
+}
+
+test_state_untouched_by_noninteractive_runs() {
+  local dir=$1
+  export WTCODE_STATE_FILE=$dir/state
+  "$WTCODE" :foo pwd >/dev/null 2>&1
+  [[ ! -e $dir/state ]] || { echo "  state file written by a non-interactive run" >&2; return 1; }
+}
+
+test_base_ref_env_and_flag() {
+  local dir=$1
+  git checkout -q -b side && git commit -q --allow-empty -m side-only && git checkout -q main
+  WTCODE_BASE_REF=side "$WTCODE" :fromenv true >/dev/null 2>&1
+  assert_eq "side-only" "$(git log -1 --format=%s fromenv)" "WTCODE_BASE_REF" || return 1
+  "$WTCODE" --base side :fromflag true >/dev/null 2>&1
+  assert_eq "side-only" "$(git log -1 --format=%s fromflag)" "--base REF" || return 1
+  "$WTCODE" --base=side :fromflag2 true >/dev/null 2>&1
+  assert_eq "side-only" "$(git log -1 --format=%s fromflag2)" "--base=REF" || return 1
+  "$WTCODE" :fromdefault true >/dev/null 2>&1
+  assert_eq "initial" "$(git log -1 --format=%s fromdefault)" "unchanged default"
+}
+
+###############################################################################
 # tests for .claude/settings.json symlinking (provisioning only for claude)
 ###############################################################################
 
@@ -420,6 +506,12 @@ ALL_TESTS=(
   test_new_branch_default
   test_existing_branch_not_checked_out_anywhere
   test_slash_in_new_branch_name
+  test_list_scopes
+  test_list_orders
+  test_fzf_cycle_and_state
+  test_history_and_tool_picker_state
+  test_state_untouched_by_noninteractive_runs
+  test_base_ref_env_and_flag
   test_provisions_claude_settings_symlinks
   test_provisions_claude_settings_skips_existing_file
   test_provisions_claude_gitignore_when_needed

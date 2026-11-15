@@ -20,6 +20,11 @@ shopt -s extglob
 # declare all WTCODE_* env vars and their defaults in one place
 : ${WTCODE_CMD:=}
 : ${WTCODE_USE_CURRENT_BRANCH:=false}
+: ${WTCODE_BASE_REF:=}          # ref to fork new branches from (also: --base REF)
+: ${WTCODE_BRANCH_SCOPE:=}      # initial picker scope: all|none|worktree|local|remote
+: ${WTCODE_BRANCH_ORDER:=}      # initial picker order: recent|name|type
+# where the picker remembers its last state; set to empty to disable
+: ${WTCODE_STATE_FILE=${XDG_STATE_HOME:-$HOME/.local/state}/wtcode/state}
 if --running-under-coding-agent; then
   : ${WTCODE_TMUX_MODE:=exec}
   : ${WTCODE_TERMINAL_MODE:=exec}
@@ -52,7 +57,7 @@ WTCODE_VERSION=0.6.0
   cat <<USAGE
 wtcode $WTCODE_VERSION -- launch a code tool in a git worktree
 
-Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
+Usage: wtcode [--base REF] [BRANCH] [CMD [CMD-ARGS...]]
        wtcode --exec CMD [CMD-ARGS...]
 
   BRANCH     Git branch or worktree name to switch to.
@@ -66,12 +71,28 @@ Usage: wtcode [BRANCH] [CMD [CMD-ARGS...]]
 
   --exec     Skip branch argument; select interactively, then launch CMD.
 
+  --base REF Fork a brand-new branch from REF (same as \$WTCODE_BASE_REF).
+
+Interactive picker keys (when BRANCH is omitted):
+  ctrl-s     scope: all, none (new branch only), worktree, local, remote
+  ctrl-o     order: recent, name, type (worktree/local/remote)
+  ctrl-r     base for a new branch: default, current branch, origin/HEAD
+  ctrl-t     tool: nested picker of installed tools and recent commands;
+             type a new command/args to launch it (unless CMD was given)
+  ctrl-u     git remote update, then reload
+  The last used values are remembered for next time.
+
 Environment variables:
   WTCODE_CMD             Default tool to launch (e.g., claude, lazygit, vim)
   WTCODE_USE_CURRENT_BRANCH
                          When creating a brand-new branch, fork it from the
                          current HEAD instead of the default: origin/HEAD
                          (falling back to origin/main, then origin/master)
+  WTCODE_BASE_REF        Fork brand-new branches from this ref (overrides the above)
+  WTCODE_BRANCH_SCOPE    Initial picker scope (all|none|worktree|local|remote)
+  WTCODE_BRANCH_ORDER    Initial picker order (recent|name|type)
+  WTCODE_STATE_FILE      Where the picker remembers its last state
+                         (default: \$XDG_STATE_HOME/wtcode/state; empty disables)
   WTCODE_TMUX_MODE       When in tmux, control how the tool is launched:
                            send-keys    - send command to current pane (default in tmux,
                                           unless run by a known AI coding agent -- see below)
@@ -124,6 +145,10 @@ WTCODE_CMDS_TO_TRY=(
 # the current HEAD. only consults local remote-tracking refs -- never
 # touches the network.
 --default-base-ref() {
+  if [[ -n $WTCODE_BASE_REF ]]; then
+    echo "$WTCODE_BASE_REF"
+    return
+  fi
   if [[ $WTCODE_USE_CURRENT_BRANCH == true ]]; then
     git rev-parse HEAD
     return
@@ -133,6 +158,254 @@ WTCODE_CMDS_TO_TRY=(
     git rev-parse --verify -q "$ref" &>/dev/null && { echo "$ref"; return; }
   done
   git rev-parse HEAD
+}
+
+###############################################################################
+## interactive picker support -- remembered state, key-binding callbacks
+###############################################################################
+# The fzf picker lets you cycle some options with key bindings:
+#   ctrl-s scope   ctrl-o order   ctrl-r base ref   ctrl-u update
+#   ctrl-t tool: opens a nested picker of installed tools and recently
+#           launched commands; type anything to launch a new command/args
+# The current values live in small files under a temp dir ($1 of the --fzf-*
+# callbacks, which fzf runs as separate processes), and the final values are
+# remembered in $WTCODE_STATE_FILE for next time. none of this is touched when
+# a BRANCH is given on the command line.
+
+WTCODE_SCOPES=(all none worktree local remote)
+WTCODE_ORDERS=(recent name type)
+WTCODE_BASES=(default current origin)
+
+--self() {
+  local src=${BASH_SOURCE[0]}
+  echo "$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+}
+
+# --state-get KEY -- last remembered value (empty if none)
+--state-get() {
+  [[ -n $WTCODE_STATE_FILE && -r $WTCODE_STATE_FILE ]] || return 0
+  sed -n "s/^$1=//p" "$WTCODE_STATE_FILE" | tail -1
+}
+
+# --state-save KEY=VALUE... -- remember values, keeping the other keys
+--state-save() {
+  [[ -n $WTCODE_STATE_FILE ]] || return 0
+  {
+    mkdir -p "$(dirname "$WTCODE_STATE_FILE")"
+    local tmp=$WTCODE_STATE_FILE.$$ kv
+    { [[ -r $WTCODE_STATE_FILE ]] && cat "$WTCODE_STATE_FILE"; true; } > "$tmp"
+    for kv; do
+      grep -v "^${kv%%=*}=" "$tmp" > "$tmp.2" || true
+      echo "$kv" >> "$tmp.2"
+      mv "$tmp.2" "$tmp"
+    done
+    mv "$tmp" "$WTCODE_STATE_FILE"
+  } 2>/dev/null || --msg "could not save state to $WTCODE_STATE_FILE"
+}
+
+# --pick-valid VALUE DEFAULT CHOICES... -- VALUE if among CHOICES, else DEFAULT
+--pick-valid() {
+  local v=$1 d=$2 c; shift 2
+  for c; do [[ $c == "$v" ]] && { echo "$v"; return; }; done
+  echo "$d"
+}
+
+# --next-in-cycle CURRENT ITEMS... -- the item after CURRENT, wrapping around
+--next-in-cycle() {
+  local cur=$1 item take=false; shift
+  for item; do
+    $take && { echo "$item"; return; }
+    [[ $item == "$cur" ]] && take=true
+  done
+  echo "$1"
+}
+
+# --base-ref-for MODE -- the ref a new branch is forked from in each base mode
+--base-ref-for() {
+  case $1 in
+    current) echo HEAD ;;
+    origin)  git rev-parse --verify -q origin/HEAD &>/dev/null && echo origin/HEAD || --default-base-ref ;;
+    *)       --default-base-ref ;;
+  esac
+}
+
+--base-ref-label() {
+  local ref; ref=$(--base-ref-for "$1")
+  case $1 in
+    current) echo "current branch ($(git branch --show-current 2>/dev/null || true))" ;;
+    origin)  echo "$ref" ;;
+    *)       [[ $ref =~ ^[0-9a-f]{40}$ ]] && ref=${ref:0:8}; echo "default ($ref)" ;;
+  esac
+}
+
+# --available-tools -- installed tools worth offering, one per line
+--available-tools() {
+  local c seen=' '
+  for c in ${WTCODE_CMD:+"$WTCODE_CMD"} "${WTCODE_CMDS_TO_TRY[@]}" "${SHELL:-bash}"; do
+    [[ -n $c && $seen != *" $c "* ]] || continue
+    # an explicit $WTCODE_CMD is always offered; the rest only if installed
+    if [[ $c == "${WTCODE_CMD-}" ]] || type "$c" &>/dev/null; then
+      echo "$c"; seen+="$c "
+    fi
+  done
+}
+
+# --fzf-init -- make the state dir for one picker session, print its path
+--fzf-init() {
+  local dir v
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/wtcode.XXXXXX")
+  # env vars/args win over what was remembered
+  v=${WTCODE_BRANCH_SCOPE:-$(--state-get scope)}
+  --pick-valid "$v" all "${WTCODE_SCOPES[@]}" > "$dir/scope"
+  v=${WTCODE_BRANCH_ORDER:-$(--state-get order)}
+  --pick-valid "$v" recent "${WTCODE_ORDERS[@]}" > "$dir/order"
+  if [[ -n $WTCODE_BASE_REF || $WTCODE_USE_CURRENT_BRANCH == true ]]; then
+    echo default > "$dir/base"
+  else
+    --pick-valid "$(--state-get base)" default "${WTCODE_BASES[@]}" > "$dir/base"
+  fi
+  if [[ -n ${WTCODE_TOOL_FIXED-} ]]; then
+    echo "$WTCODE_TOOL_FIXED" > "$dir/tool_fixed"
+  else
+    # initial: $WTCODE_CMD, else the last used command if still installed,
+    # else the first installed tool
+    v=${WTCODE_CMD:-$(--state-get tool)}
+    [[ -n $WTCODE_CMD ]] || type "${v%% *}" &>/dev/null || v=$(--available-tools | head -1)
+    echo "$v" > "$dir/tool"
+  fi
+  echo "$dir"
+}
+
+# --fzf-commit DIR -- apply and remember the final picker state
+--fzf-commit() {
+  local dir=$1 base tool
+  base=$(<"$dir/base")
+  [[ $base == default ]] || WTCODE_BASE_REF=$(--base-ref-for "$base")
+  if [[ -r $dir/tool ]]; then
+    tool=$(<"$dir/tool")
+    WTCODE_PICKED_TOOL=$tool
+    --history-add "$tool"
+  fi
+  --state-save scope="$(<"$dir/scope")" order="$(<"$dir/order")" base="$base" ${tool:+tool="$tool"}
+}
+
+# --fzf-cycle DIR KIND -- advance scope|order|base|tool to its next value
+--fzf-cycle() {
+  local dir=$1 kind=$2 choices
+  case $kind in
+    scope) choices=("${WTCODE_SCOPES[@]}") ;;
+    order) choices=("${WTCODE_ORDERS[@]}") ;;
+    base)  choices=("${WTCODE_BASES[@]}") ;;
+  esac
+  --next-in-cycle "$(<"$dir/$kind")" "${choices[@]}" > "$dir/$kind.new"
+  mv "$dir/$kind.new" "$dir/$kind"
+}
+
+# recently launched commands, most recent first
+--history-file() { [[ -n $WTCODE_STATE_FILE ]] && echo "$WTCODE_STATE_FILE.cmds" || true; }
+--history-add() {
+  local f; f=$(--history-file); [[ -n $f && -n $1 ]] || return 0
+  { { echo "$1"; grep -vxF -- "$1" "$f" 2>/dev/null || true; } | head -20 > "$f.new" && mv "$f.new" "$f"; } 2>/dev/null || true
+}
+
+# --fzf-pick-tool DIR -- nested picker for the tool (run via ctrl-t)
+# lists recent commands and installed tools; typing text that matches nothing
+# (or pressing alt-enter) takes the typed text as-is, e.g. `claude --resume`
+--fzf-pick-tool() {
+  local dir=$1 f out query key choice
+  f=$(--history-file)
+  out=$(
+    { [[ -n $f && -r $f ]] && cat "$f"; --available-tools; } | awk '!seen[$0]++' |
+    fzf --print-query --expect alt-enter --prompt 'tool> ' --height 100% --layout reverse \
+        --header 'Pick a tool/recent command, or type a new command with args.
+enter: pick highlighted (or typed text if nothing matches)   alt-enter: use typed text as-is' ||
+    true
+  )
+  # fzf prints just the query when nothing matches, else query, key, choice
+  { read -r query || true; read -r key || true; read -r choice || true; } <<< "$out"
+  if [[ $key == alt-enter || -z $choice ]]; then choice=$query; fi
+  [[ -n $choice ]] && echo "$choice" > "$dir/tool"
+  return 0
+}
+
+--fzf-list() { --list-branches "$(<"$1/scope")" "$(<"$1/order")"; }
+
+--fzf-update() {
+  GIT_TERMINAL_PROMPT=0 git remote update </dev/null &>/dev/null || true
+  --fzf-list "$1"
+}
+
+--fzf-header() {
+  local dir=$1 tool
+  if [[ -r $dir/tool_fixed ]]; then tool="$(<"$dir/tool_fixed") (given)"; else tool="$(<"$dir/tool") (pick/type)"; fi
+  echo '[wtcode] Select the worktree/branch or create new to launch your code tool in it.'
+  echo '         Typing colons `:` avoids selecting an existing one to create new with similar names.'
+  echo "  ^s scope: $(<"$dir/scope")   ^o order: $(<"$dir/order")   ^r new branch from: $(--base-ref-label "$(<"$dir/base")")"
+  echo "  ^t tool: $tool   ^u update remotes"
+}
+
+# --list-branches [SCOPE] [ORDER] -- candidates for the picker
+# format: branch_name<TAB>indicator branch_name<TAB>date hash [upstream] subject
+--list-branches() {
+  local scope=${1:-all} order=${2:-recent}
+  { set +x; } &>/dev/null
+  [[ $scope == none ]] && return 0
+  # NOTE: git branch --format uses ref-filter syntax which doesn't support
+  # pretty-format's %<(N,trunc) truncation. Using bash to handle truncation,
+  # alignment, and coloring instead.
+  local c_reset=$'\e[0m' c_green=$'\e[32m' c_cyan=$'\e[36m' c_blue=$'\e[34m' c_yellow=$'\e[33m' c_dim=$'\e[2m'
+  local c_red=$'\e[31m' local_branches sort_args
+  local_branches=$(git branch --format='%(refname:lstrip=2)')
+  case $order in
+    name) sort_args=(-k4,4f) ;;
+    type) sort_args=(-k1,1n -k3,3nr) ;;
+    *)    sort_args=(-k2,2n -k3,3nr) ;;  # local first, then remote, each by recency
+  esac
+  {
+    # stage 1: typerank(0 worktree,1 local,2 remote) isremote epoch, then the
+    # x-prefixed fields (x keeps read from collapsing empty tab-separated ones)
+    if [[ $scope == all || $scope == local || $scope == worktree ]]; then
+      git branch --format=$'%(committerdate:unix)\tx%(refname:lstrip=2)\tx%(HEAD)\tx%(worktreepath)\tx%(committerdate:relative)\tx%(objectname:short)\tx%(upstream:track)\tx%(contents:subject)' |
+      while IFS=$'\t' read -r epoch branch head worktree rest; do
+        if [[ $head == 'x*' || -n ${worktree#x} ]]; then rank=0; else rank=1; fi
+        [[ $scope == worktree && $rank != 0 ]] && continue
+        printf '%s\t0\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$epoch" "$branch" "$head" "$worktree" "$rest" || break
+      done
+    fi
+    # remote-tracking branches that don't have a local counterpart
+    if [[ $scope == all || $scope == remote ]]; then
+      git branch -r --format=$'%(committerdate:unix)\tx%(refname:lstrip=2)\tx>\tx\tx%(committerdate:relative)\tx%(objectname:short)\tx\tx%(contents:subject)' |
+      while IFS=$'\t' read -r epoch remote_ref head worktree rest; do
+        remote_ref=${remote_ref#x}
+        [[ $remote_ref == */HEAD ]] && continue
+        grep -qxF "${remote_ref#*/}" <<< "$local_branches" && continue
+        printf '2\t1\t%s\tx%s\t%s\t%s\t%s\n' "$epoch" "$remote_ref" "$head" "$worktree" "$rest" || break
+      done
+    fi
+  } |
+  sort -t $'\t' "${sort_args[@]}" |
+  cut -f4- |
+  while IFS=$'\t' read -r branch head worktree date hash upstream subject; do
+    # strip the x prefix from all fields
+    branch=${branch#x} head=${head#x} worktree=${worktree#x} date=${date#x} hash=${hash#x} upstream=${upstream#x} subject=${subject#x}
+    # determine indicator and color: HEAD (*) takes precedence, then worktree (+)
+    if [[ $head == '*' ]]; then ind='*'; c=$c_green
+    elif [[ -n $worktree ]]; then ind='+'; c=$c_cyan
+    elif [[ $head == '>' ]]; then ind=' '; c=$c_dim
+    else ind=' '; c=$c_reset
+    fi
+    # truncate then pad branch name, right-pad date (before adding colors)
+    if (( ${#branch} > 50 )); then name="${branch:0:48}.."; else name=$branch; fi
+    printf -v name '%-50s' "$name"
+    printf -v date '%14s' "$date"
+    # build display fields with colors embedded
+    name_shown="${c}${name}${c_reset}"
+    date_shown="${c_blue}${date}${c_reset}"
+    hash_shown="${c_yellow}${hash}${c_reset}"
+    if [[ -n $upstream ]]; then upstream_shown="${c_red}${upstream}${c_reset} "; else upstream_shown=''; fi
+    printf '%s\t%s %s\t%s  %s %s%s\n' \
+      "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject" || break
+  done
 }
 
 ###############################################################################
@@ -146,60 +419,38 @@ WTCODE_CMDS_TO_TRY=(
   if [[ $# -gt 0 ]]; then
     branch_name=$1; shift
   elif type fzf &>/dev/null; then
-    # if branch name unspecified, use fzf to select one or enter a new name
-    # format: branch_name<TAB>indicator branch_name date hash [upstream] subject
+    # if branch name unspecified, use fzf to select one or enter a new name.
+    # key bindings cycle scope/order/base/tool, see --fzf-* below
+    local fzf_dir fzf_dir_q self b
+    fzf_dir=$(--fzf-init)
+    self=$(--self)
+    printf -v b '%q %q' "$BASH" "$self"   # command prefix for the key bindings
+    printf -v fzf_dir_q '%q' "$fzf_dir"
+    local bind_tool=()
+    [[ -z ${WTCODE_TOOL_FIXED-} ]] &&
+      bind_tool=(--bind "ctrl-t:execute($b --fzf-pick-tool $fzf_dir_q)+transform-header($b --fzf-header $fzf_dir_q)")
     branch_name=$(
       { set +x; } &>/dev/null
-      # NOTE: git branch --format uses ref-filter syntax which doesn't support
-      # pretty-format's %<(N,trunc) truncation. Using bash to handle truncation,
-      # alignment, and coloring instead.
-      c_reset=$'\e[0m' c_green=$'\e[32m' c_cyan=$'\e[36m' c_blue=$'\e[34m' c_yellow=$'\e[33m' c_red=$'\e[31m' c_dim=$'\e[2m'
-      {
-      git branch --sort=-committerdate \
-          --format=$'x%(refname:lstrip=2)\tx%(HEAD)\tx%(worktreepath)\tx%(committerdate:relative)\tx%(objectname:short)\tx%(upstream:track)\tx%(contents:subject)'
-      # also include remote-tracking branches that don't have a local counterpart
-      local_branches=$(git branch --format='%(refname:lstrip=2)')
-      git branch -r --sort=-committerdate \
-          --format=$'x%(refname:lstrip=2)\tx>\tx\tx%(committerdate:relative)\tx%(objectname:short)\tx\tx%(contents:subject)' |
-      while IFS=$'\t' read -r remote_ref rest; do
-        remote_ref=${remote_ref#x}
-        [[ $remote_ref == */HEAD ]] && continue
-        local_name=${remote_ref#*/}
-        grep -qxF "$local_name" <<< "$local_branches" && continue
-        printf 'x%s\t%s\n' "$remote_ref" "$rest" || break
-      done
-      } |
-      while IFS=$'\t' read -r branch head worktree date hash upstream subject; do
-        # strip the x prefix from all fields
-        branch=${branch#x} head=${head#x} worktree=${worktree#x} date=${date#x} hash=${hash#x} upstream=${upstream#x} subject=${subject#x}
-        # determine indicator and color: HEAD (*) takes precedence, then worktree (+)
-        if [[ $head == '*' ]]; then ind='*'; c=$c_green
-        elif [[ -n $worktree ]]; then ind='+'; c=$c_cyan
-        elif [[ $head == '>' ]]; then ind=' '; c=$c_dim
-        else ind=' '; c=$c_reset
-        fi
-        # truncate then pad branch name, right-pad date (before adding colors)
-        if (( ${#branch} > 50 )); then name="${branch:0:48}.."; else name=$branch; fi
-        printf -v name '%-50s' "$name"
-        printf -v date '%14s' "$date"
-        # build display fields with colors embedded
-        name_shown="${c}${name}${c_reset}"
-        date_shown="${c_blue}${date}${c_reset}"
-        hash_shown="${c_yellow}${hash}${c_reset}"
-        if [[ -n $upstream ]]; then upstream_shown="${c_red}${upstream}${c_reset} "; else upstream_shown=''; fi
-        printf '%s\t%s %s\t%s  %s %s%s\n' \
-          "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject" || break
-      done |
+      --list-branches "$(<"$fzf_dir/scope")" "$(<"$fzf_dir/order")" |
       fzf --ansi --color --tmux 90%,70% --print-query --delimiter=$'\t' --with-nth=2 --nth=1 \
           --preview 'echo {3}' --preview-window 'down:2:wrap' \
-          --header "$(
-              echo '[wtcode] Select the worktree/branch or create new to launch your code tool in it.'
-              echo '         Typing colons `:` avoids selecting an existing one to create new with similar names.'
-          )" \
+          --header "$(--fzf-header "$fzf_dir")" \
+          --bind "ctrl-s:execute-silent($b --fzf-cycle $fzf_dir_q scope)+reload($b --fzf-list $fzf_dir_q)+transform-header($b --fzf-header $fzf_dir_q)" \
+          --bind "ctrl-o:execute-silent($b --fzf-cycle $fzf_dir_q order)+reload($b --fzf-list $fzf_dir_q)+transform-header($b --fzf-header $fzf_dir_q)" \
+          --bind "ctrl-r:execute-silent($b --fzf-cycle $fzf_dir_q base)+transform-header($b --fzf-header $fzf_dir_q)" \
+          --bind "ctrl-u:change-header(updating remotes...)+reload($b --fzf-update $fzf_dir_q)" \
+          --bind "load:transform-header($b --fzf-header $fzf_dir_q)" \
+          ${bind_tool[@]+"${bind_tool[@]}"} \
           --prompt '> ' |
       cut -f1 |
       tail -1
     )
+    if [[ -n ${branch_name-} ]]; then
+      --fzf-commit "$fzf_dir"
+      # an empty scope means the typed text is a new name, never an existing ref
+      [[ $(<"$fzf_dir/scope") == none ]] && branch_name=:$branch_name
+    fi
+    rm -rf "$fzf_dir"
   else  # abort if fzf not available
     branch_name=${1:?Need a worktree/branch name as first argument}; shift
   fi
@@ -493,7 +744,14 @@ APPLESCRIPT
 ###############################################################################
 --launch-code-tool() {
   # resolve the command to launch if not specified
-  if [[ $# -eq 0 ]]; then
+  if [[ $# -eq 0 && -n ${WTCODE_PICKED_TOOL-} ]]; then
+    # chosen in the interactive picker; may carry args, e.g. `claude --resume`
+    local _w _words=()
+    while IFS= read -r -d '' _w; do _words+=("$_w"); done < <(
+      printf '%s' "$WTCODE_PICKED_TOOL" | xargs printf '%s\0' 2>/dev/null ||
+      printf '%s\0' $WTCODE_PICKED_TOOL)
+    set -- "${_words[@]}"
+  elif [[ $# -eq 0 ]]; then
     for _cmd in "${WTCODE_CMDS_TO_TRY[@]}"; do
       [[ -n "$_cmd" ]] && type "$_cmd" &>/dev/null && set -- "$_cmd" && break
     done
@@ -583,6 +841,7 @@ APPLESCRIPT
 -h() { --help "$@"; }
 
 --exec() {
+  [[ $# -gt 0 ]] && WTCODE_TOOL_FIXED=$1   # CMD given: the picker can't change it
   --enter-git-worktree
   --launch-code-tool "$@"
 }
@@ -595,6 +854,13 @@ APPLESCRIPT
   fi
   --launch-code-tool "$@"
 }
+
+# global options (before BRANCH/CMD): --base REF
+while [[ ${1-} == --base || ${1-} == --base=* ]]; do
+  if [[ $1 == --base=* ]]; then WTCODE_BASE_REF=${1#--base=}; shift
+  else WTCODE_BASE_REF=${2:?--base needs a ref}; shift 2
+  fi
+done
 
 # dispatch $1 as a function when it starts with -
 [[ ${1-} == -* ]] || set -- -- "$@"
