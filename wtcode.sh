@@ -432,8 +432,8 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   if [[ -r $dir/tool_fixed ]]; then tool="tool: $b$(<"$dir/tool_fixed")$r (given)"; else tool="^t tool: $b$(<"$dir/tool")$r"; fi
   update='^l update remotes'
   [[ ! -e $dir/updating ]] || update="^l ${b}updating remotes...$r"   # inline: the rest of the header stays
-  echo 'Enter: select, or create if nothing matches   alt-enter: create from what you typed'
-  echo "$tool   ^r new branch from: $b$(<"$dir/base_label")$r"
+  echo "Enter: select, or create if nothing matches   $tool"
+  echo "alt-enter: create new worktree   ^r branch from: $b$(<"$dir/base_label")$r"
   echo "^s scope: $b$scope$r   ^o order: $b$order$r   $update"
 }
 

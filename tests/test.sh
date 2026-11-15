@@ -278,14 +278,14 @@ test_base_labels_and_header() {
   assert_eq "side/x (default)" "$(WTCODE_BASE_REF=side/x "$WTCODE" --base-label default)" "explicit base" || return 1
   d=$("$WTCODE" --fzf-init)
   # ^r is always shown, and alt-enter is hinted
-  assert_contains "$(--header "$d")" "^r new branch from: origin/main (default)" "^r always visible" || return 1
-  assert_contains "$(--header "$d")" "alt-enter: create from what you typed" "hint when browsing" || return 1
+  assert_contains "$(--header "$d")" "^r branch from: origin/main (default)" "^r always visible" || return 1
+  assert_contains "$(--header "$d")" "alt-enter: create new worktree" "alt-enter hint" || return 1
   : > "$d/updating"   # ^l pressed: only that spot changes, the rest of the header stays
   assert_contains "$(--header "$d")" "^l updating remotes..." "inline update indicator" || return 1
   assert_contains "$(--header "$d")" "^s scope: all" "rest of the header stays while updating" || return 1
   rm "$d/updating"
   "$WTCODE" --fzf-cycle "$d" base
-  assert_contains "$(--header "$d")" "^r new branch from: main (current)" "label follows ^r"
+  assert_contains "$(--header "$d")" "^r branch from: main (current)" "label follows ^r"
 }
 
 test_fzf_cycle_and_state() {
