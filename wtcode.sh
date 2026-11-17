@@ -51,7 +51,7 @@ ${WTCODE_DEBUG:+set -x}
     sed 's|^[-/]*||; s|[-/]*$||'   # trim leading/trailing hyphens/slashes
 }
 
-WTCODE_VERSION=0.7.0
+WTCODE_VERSION=0.7.1
 --version() { echo "wtcode $WTCODE_VERSION"; }
 --help() {
   cat <<USAGE
@@ -526,67 +526,73 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
     # read from collapsing empty tab-separated ones)
     if [[ $scope == all || $scope == local || $scope == worktree ]]; then
       git branch --format=$'%(committerdate:unix)\tx%(refname:lstrip=2)\tx%(HEAD)\tx%(worktreepath)\tx%(committerdate:relative)\tx%(objectname:short)\tx%(upstream:track)\tx%(contents:subject)' |
-      while IFS=$'\t' read -r epoch branch head worktree rest; do
-        [[ $scope == worktree && $head != 'x*' && -z ${worktree#x} ]] && continue
-        printf '0\t%s\t%s\t%s\t%s\t%s\t%s\n' "$epoch" "$branch" "$branch" "$head" "$worktree" "$rest" || break
-      done
+      awk -F'\t' -v OFS='\t' -v scope="$scope" '
+        scope == "worktree" && $3 != "x*" && $4 == "x" { next }
+        { print 0, $1, $2, $2, $3, $4, $5, $6, $7, $8 }'
     fi
     # remote-tracking branches that don't have a local counterpart
     if [[ $scope == all || $scope == remote ]]; then
       git branch -r --format=$'%(committerdate:unix)\tx%(refname:lstrip=2)\tx>\tx\tx%(committerdate:relative)\tx%(objectname:short)\tx\tx%(contents:subject)' |
-      while IFS=$'\t' read -r epoch remote_ref head worktree rest; do
-        remote_ref=${remote_ref#x}
-        [[ $remote_ref == */HEAD ]] && continue
-        grep -qxF "${remote_ref#*/}" <<< "$local_branches" && continue
-        printf '1\t%s\tx%s\tx%s\t%s\t%s\t%s\n' "$epoch" "${remote_ref#*/}" "$remote_ref" "$head" "$worktree" "$rest" || break
-      done
+      WTCODE_LOCALS=$local_branches awk -F'\t' -v OFS='\t' '
+        BEGIN { n = split(ENVIRON["WTCODE_LOCALS"], a, "\n"); for (i = 1; i <= n; i++) have[a[i]] = 1 }
+        { ref = substr($2, 2) }
+        ref ~ /\/HEAD$/ { next }
+        { name = ref; sub(/^[^\/]*\//, "", name) }
+        name in have { next }
+        { print 1, $1, "x" name, "x" ref, $3, $4, $5, $6, $7, $8 }'
     fi
   } |
   sort -t $'\t' "${sort_args[@]}" |
   cut -f4- |
-  while IFS=$'\t' read -r branch head worktree date hash upstream subject; do
-    # strip the x prefix from all fields
-    branch=${branch#x} head=${head#x} worktree=${worktree#x} date=${date#x} hash=${hash#x} upstream=${upstream#x} subject=${subject#x}
-    # determine indicator and color: HEAD (*) takes precedence, then worktree (+)
-    local pre= suf= nm=$branch
-    if [[ $head == '*' ]]; then ind='*'; c=$c_green
-    elif [[ -n $worktree ]]; then ind='+'; c=$c_cyan
-    elif [[ $head == '>' ]]; then
-      # remote-only: mute the remote part, as a prefix (remote/name) or,
-      # when sorting by name alone, as a suffix: name (remote)
-      ind=' '; c=$c_reset
-      if [[ $order == name ]]; then nm=${branch#*/} suf=" (${branch%%/*})"; else pre=${branch%%/*}/ nm=${branch#*/}; fi
-    else ind=' '; c=$c_reset
-    fi
-    # worktrees also show where they are, searchable too, when that is
-    # unexpected: under the root but drifted from the branch name (wtcode puts
-    # branch X at <root>/X), or somewhere else entirely. the main checkout and
-    # in-place worktrees show nothing. local/remote scopes are about branches
-    if [[ -n $worktree && $worktree != "$main_wt" && ( $scope == all || $scope == worktree ) ]]; then
-      local rel=$worktree
-      if [[ -n $wt_root && $worktree == "$wt_root"/* ]]; then
-        rel=${worktree#"$wt_root"/}
-      elif [[ $worktree == "$HOME"/* ]]; then
-        rel="~/${worktree#"$HOME"/}"
-      fi
-      (( ${#rel} > 28 )) && rel="..${rel: -26}"
-      [[ $rel == "$branch" ]] || suf=" @ $rel"
-    fi
-    # truncate the name to fit, then pad (before adding colors)
-    local room=$(( 50 - ${#pre} - ${#suf} )) padw
-    (( room < 4 )) && room=4
-    (( ${#nm} > room )) && nm="${nm:0:room-2}.."
-    padw=$(( 50 - ${#pre} - ${#nm} - ${#suf} )); (( padw < 0 )) && padw=0
-    printf -v pad '%*s' "$padw" ''
-    printf -v date '%14s' "$date"
-    # build display fields with colors embedded
-    name_shown="${c_muted}${pre}${c_reset}${c}${nm}${c_reset}${c_muted}${suf}${c_reset}${pad}"
-    date_shown="${c_blue}${date}${c_reset}"
-    hash_shown="${c_yellow}${hash}${c_reset}"
-    if [[ -n $upstream ]]; then upstream_shown="${c_red}${upstream}${c_reset} "; else upstream_shown=''; fi
-    printf '%s\t%s %s\t%s  %s %s%s\n' \
-      "$branch" "$ind" "$name_shown" "$date_shown" "$hash_shown" "$upstream_shown" "$subject" || break
-  done
+  WTCODE_SCOPE=$scope WTCODE_ORDER=$order WTCODE_MAIN_WT=$main_wt WTCODE_WT_ROOT=$wt_root \
+  WTCODE_COLS=${FZF_COLUMNS:-${COLUMNS:-0}} \
+  awk -F'\t' '
+    function sx(f) { return substr(f, 2) }   # strip the x prefix
+    BEGIN {
+      scope = ENVIRON["WTCODE_SCOPE"]; order = ENVIRON["WTCODE_ORDER"]
+      main_wt = ENVIRON["WTCODE_MAIN_WT"]; wt_root = ENVIRON["WTCODE_WT_ROOT"]; home = ENVIRON["HOME"]
+      reset = "\033[0m"; green = "\033[32m"; cyan = "\033[36m"; blue = "\033[34m"; yellow = "\033[33m"
+      muted = "\033[2;90m"; red = "\033[31m"
+      # the name column grows with the terminal width so a worktree'"'"'s full
+      # dir name fits when there is space; the name keeps at least 20 chars
+      colw = ENVIRON["WTCODE_COLS"] - 40; if (colw < 50) colw = 50
+    }
+    {
+      branch = sx($1); head = sx($2); worktree = sx($3); date = sx($4); hash = sx($5)
+      upstream = sx($6); subject = sx($7)
+      pre = ""; suf = ""; nm = branch
+      # indicator and color: HEAD (*) takes precedence, then worktree (+)
+      if (head == "*") { ind = "*"; c = green }
+      else if (worktree != "") { ind = "+"; c = cyan }
+      else if (head == ">") {
+        # remote-only: mute the remote part, as a prefix (remote/name) or,
+        # when sorting by name alone, as a suffix: name (remote)
+        ind = " "; c = reset
+        i = index(branch, "/"); rem = substr(branch, 1, i - 1); nm = substr(branch, i + 1)
+        if (order == "name") suf = " (" rem ")"; else pre = rem "/"
+      } else { ind = " "; c = reset }
+      # worktrees also show where they are, searchable too, when that is
+      # unexpected: under the root but drifted from the branch name (wtcode puts
+      # branch X at <root>/X), or somewhere else entirely. the main checkout and
+      # in-place worktrees show nothing. local/remote scopes are about branches
+      if (worktree != "" && worktree != main_wt && (scope == "all" || scope == "worktree")) {
+        rel = worktree
+        if (wt_root != "" && index(worktree, wt_root "/") == 1) rel = substr(worktree, length(wt_root) + 2)
+        else if (home != "" && index(worktree, home "/") == 1) rel = "~/" substr(worktree, length(home) + 2)
+        if (rel != branch) suf = " @ " rel
+      }
+      # truncate to fit, then pad (before adding colors)
+      room = colw - length(pre) - length(suf); if (room < 20) room = 20
+      if (length(suf) > colw - 20) { suf = " @ .." substr(suf, length(suf) - (colw - 24) + 1); room = 20 }
+      if (length(nm) > room) nm = substr(nm, 1, room - 2) ".."
+      padw = colw - length(pre) - length(nm) - length(suf)
+      pad = padw > 0 ? sprintf("%" padw "s", "") : ""
+      date = sprintf("%14s", date)
+      if (upstream != "") upstream = red upstream reset " "
+      printf "%s\t%s %s%s%s%s%s%s%s%s\t%s%s%s  %s%s%s %s%s\n", branch, ind, \
+        muted, pre, reset, c nm reset, muted suf reset, pad, "", "", \
+        blue, date, reset, yellow, hash, reset, upstream, subject
+    }'
 }
 
 ###############################################################################
