@@ -498,6 +498,18 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   echo "^s scope: $b$scope$r   ^o order: $b$order$r   $update"
 }
 
+# --list-width -- columns the picker's list gets, for sizing the name column.
+# Inside fzf (reload) $FZF_COLUMNS is the whole terminal; the initial listing
+# runs before fzf starts, so ask the terminal. The preview takes the right half
+# at 120+ columns (see --fzf-run's --preview-window), else it goes below.
+--list-width() {
+  local cols=${FZF_COLUMNS:-0}
+  (( cols > 0 )) || cols=$(stty size 2>/dev/null </dev/tty | cut -d' ' -f2)
+  [[ $cols == [0-9]* ]] || cols=${COLUMNS:-0}
+  (( cols >= 120 )) && cols=$(( cols / 2 - 2 ))
+  echo "$cols"
+}
+
 # --list-branches [SCOPE] [ORDER] -- candidates for the picker
 # format: branch_name<TAB>indicator branch_name<TAB>date hash [upstream] subject
 --list-branches() {
@@ -506,8 +518,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   # NOTE: git branch --format uses ref-filter syntax which doesn't support
   # pretty-format's %<(N,trunc) truncation. Using bash to handle truncation,
   # alignment, and coloring instead.
-  local c_reset=$'\e[0m' c_green=$'\e[32m' c_cyan=$'\e[36m' c_blue=$'\e[34m' c_yellow=$'\e[33m' c_muted=$'\e[2;90m'   # dim gray: the remote/ part and worktree paths
-  local c_red=$'\e[31m' local_branches sort_args
+  local local_branches sort_args   # (colors: dim gray 2;90m is for the remote/ part and worktree paths)
   local_branches=$(git branch --format='%(refname:lstrip=2)')
   # the two places worktrees are expected: the main checkout, and the root
   # where wtcode puts the rest (see --enter-git-worktree)
@@ -545,7 +556,7 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
   sort -t $'\t' "${sort_args[@]}" |
   cut -f4- |
   WTCODE_SCOPE=$scope WTCODE_ORDER=$order WTCODE_MAIN_WT=$main_wt WTCODE_WT_ROOT=$wt_root \
-  WTCODE_COLS=${FZF_COLUMNS:-${COLUMNS:-0}} \
+  WTCODE_COLS=$(--list-width) \
   awk -F'\t' '
     function sx(f) { return substr(f, 2) }   # strip the x prefix
     BEGIN {
@@ -555,7 +566,9 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       muted = "\033[2;90m"; red = "\033[31m"
       # the name column grows with the terminal width so a worktree'"'"'s full
       # dir name fits when there is space; the name keeps at least 20 chars
-      colw = ENVIRON["WTCODE_COLS"] - 40; if (colw < 50) colw = 50
+      colw = ENVIRON["WTCODE_COLS"] - 6   # the pane less marker, indicator, scrollbar
+      if (ENVIRON["WTCODE_COLS"] + 0 <= 0) colw = 50   # width unknown
+      if (colw < 30) colw = 30
     }
     {
       branch = sx($1); head = sx($2); worktree = sx($3); date = sx($4); hash = sx($5)
@@ -583,14 +596,14 @@ enter: pick highlighted (or typed text if nothing matches)   alt-enter: use type
       }
       # truncate to fit, then pad (before adding colors)
       room = colw - length(pre) - length(suf); if (room < 20) room = 20
-      if (length(suf) > colw - 20) { suf = " @ .." substr(suf, length(suf) - (colw - 24) + 1); room = 20 }
+      if (length(suf) > colw - 20) { suf = " @ .." substr(suf, length(suf) - (colw - 25) + 1); room = 20 }
       if (length(nm) > room) nm = substr(nm, 1, room - 2) ".."
       padw = colw - length(pre) - length(nm) - length(suf)
       pad = padw > 0 ? sprintf("%" padw "s", "") : ""
       date = sprintf("%14s", date)
       if (upstream != "") upstream = red upstream reset " "
-      printf "%s\t%s %s%s%s%s%s%s%s%s\t%s%s%s  %s%s%s %s%s\n", branch, ind, \
-        muted, pre, reset, c nm reset, muted suf reset, pad, "", "", \
+      printf "%s\t%s %s%s%s%s%s%s\t%s%s%s  %s%s%s %s%s\n", branch, ind, \
+        muted, pre, reset, c nm reset, muted suf reset, pad, \
         blue, date, reset, yellow, hash, reset, upstream, subject
     }'
 }
