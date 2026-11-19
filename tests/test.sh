@@ -292,6 +292,26 @@ test_unexpected_worktree_dir_shown_and_searchable() {
   assert_eq "feat" "$("$WTCODE" --list-branches all recent | grep -a 'feat' | head -1 | cut -f1)" "row id stays the branch"
 }
 
+test_name_column_width_follows_terminal() {
+  local dir=$1 long=drifted-directory-with-a-rather-long-name-for-this-worktree out w
+  git worktree add -q "$GIT_WORKTREE_ROOT/$long" -b short
+  git branch -q another-quite-long-branch-name-that-needs-some-room-to-be-shown-in-full
+  git worktree add -q "$GIT_WORKTREE_ROOT/x" -b "$(printf 'n%.0s' {1..70})"
+  local plain=$'s/\x1b\\[[0-9;]*m//g'
+  # narrow (preview below): the dir is cut at its start, and every name field fills the list pane (60 - 6)
+  out=$(FZF_COLUMNS=60 "$WTCODE" --list-branches all recent | cut -f2 | sed "$plain")
+  assert_contains "$(grep '^[+ *] short' <<< "$out")" "@ .." "long dir cut at its start when narrow" || return 1
+  while IFS= read -r line; do
+    [[ ${#line} == 56 ]] || { echo "  name field is ${#line} wide, not 56 (indicator + 54 = 60 - 6): '$line'" >&2; return 1; }
+  done <<< "$out"
+  # wide: the dir is shown in full
+  out=$(FZF_COLUMNS=300 "$WTCODE" --list-branches all recent | cut -f2 | sed "$plain")
+  assert_contains "$(grep '^[+ *] short' <<< "$out")" "@ $long" "full dir name when there is space" || return 1
+  # when the dir is too long, the name keeps at least 20 chars and the column does not overflow
+  out=$(FZF_COLUMNS=300 "$WTCODE" --list-branches all recent | cut -f2 | sed "$plain" | grep '^[+ *] nnnn')
+  assert_contains "$out" "nnnnnnnnnnnnnnnnnnnn" "name keeps room" || return 1
+}
+
 test_base_labels_and_header() {
   local dir=$1 d
   --picker-repo "$dir"; git remote set-head origin main >/dev/null
@@ -670,6 +690,7 @@ ALL_TESTS=(
   test_list_scopes
   test_list_orders
   test_unexpected_worktree_dir_shown_and_searchable
+  test_name_column_width_follows_terminal
   test_base_labels_and_header
   test_fzf_cycle_and_state
   test_history_and_tool_picker_state
